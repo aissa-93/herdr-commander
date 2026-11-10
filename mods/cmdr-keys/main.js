@@ -17,6 +17,7 @@ const CELLS = [
   ["Close pane", "pane.close", "pane.close"],
   ["Reply", "cmdr-tree.reply", "cmdr-tree.reply"],
   ["Crew", "cmdr-tree.crew", "cmdr-tree.crew"],
+  ["To-do", "cmdr-menubar.todo", "cmdr-menubar.todo"],
   ["Go to", "mod.open:picker", "mod.open", { name: "picker" }],
   ["Commands", "app.palette", "app.palette"],
   ["Sidebar", "layout.toggle:sidebar", "layout.toggle", { id: "sidebar" }],

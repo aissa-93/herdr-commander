@@ -1,6 +1,9 @@
 {
   "layout:commander": {
     "ctrl-shift-r": "cmdr-tree.reply",
-    "ctrl-shift-j": "cmdr-tree.project"
+    "ctrl-shift-j": "cmdr-tree.project",
+    "ctrl-shift-d": "cmdr-menubar.todo",
+    "ctrl-shift-m": "cmdr-menubar.pane-to-tab",
+    "ctrl-shift-a": "cmdr-menubar.tab-to-split"
   }
 }

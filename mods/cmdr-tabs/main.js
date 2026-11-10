@@ -1,12 +1,13 @@
 // Commander's tab strip: the shown space's tabs as cells (number, what's in it, its
-// agents' state), a + for a new tab or agent, and the right panel's views.
+// agents' state), a + for a new tab or agent, and the right panel's views (to-do, notes).
 // Click a tab to show it, double-click to rename, drag to reorder, right-click for its
-// menu; the wheel goes to the next and previous tab.
+// menu (cmdr-menubar draws it: rename, new tab, join into another tab as a split,
+// close); the wheel goes to the next and previous tab.
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, shared, layout } from "herdr";
-import { grid, mark, icon } from "./ui.js";
+import { spaces, panes, run, openOverlay, theme, shared, setShared, layout } from "herdr";
+import { grid, mark, icon, OWN_VIEWS } from "./ui.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -71,7 +72,7 @@ export default class Tabs extends View {
           if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex((x) => x.id === c.id) + 1 });
           else run("tab.select", { id: c.id });
         })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); setShared("commander.tabmenu", c.id); run("cmdr-menubar.tab-menu"); })
         .child(div().flex_none().text_color(c.active ? t.accent : t.muted).child(String(c.index)))
         .when(Boolean(program?.icon), (el) => el.child(icon(program, G, c.active ? t.foreground : t.muted)))
         .child(div().max_w(30 * G.u).truncate().child(c.zoomed ? `${name} [zoom]` : name))
@@ -85,7 +86,14 @@ export default class Tabs extends View {
     const root = layout();
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = shared("workspace.panels") ?? ["files", "changes"];
-    this.syncPanel(space, panel, body, find(root, "notes") ? [...enabled, "notes"] : enabled);
+    this.syncPanel(space, panel, body, [...enabled, ...["notes", "todo"].filter((id) => find(root, id))]);
+    // The to-do button counts what isn't done yet in the shown space's list (cmdr-todo
+    // publishes the counts).
+    const open = (space && shared("commander.todo")?.[space.id]) || 0;
+    // While one of Commander's own views is shown, the panel's frame names the views and
+    // switches between them (ui.js `views`): these buttons are for bringing the panel
+    // back, and for leaving Files or Changes, which have no such frame.
+    const framed = Boolean(panel) && !panel.hidden && OWN_VIEWS.includes(body?.active);
     const panelButton = (id, label) => {
       const on = panel && !panel.hidden && body?.active === id;
       return div().id(`panel-${id}`).h_full().px(2 * G.u).flex_none().flex().items_center().cursor_pointer()
@@ -105,8 +113,9 @@ export default class Tabs extends View {
         .child(div().id("tab-new").w(G.row).h_full().flex_none().flex().items_center().justify_center().text_color(t.muted).cursor_pointer()
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("New tab or agent")
           .on_mouse_down("left", stop).on_click(() => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })).child("+")))
-      .when(Boolean(find(root, "notes")), (el) => el.child(panelButton("notes", "Notes")))
-      .when(enabled.includes("files"), (el) => el.child(panelButton("files", "Files")))
-      .when(enabled.includes("changes"), (el) => el.child(panelButton("changes", "Changes")));
+      .when(!framed && Boolean(find(root, "todo")), (el) => el.child(panelButton("todo", open ? `To-do ${open}` : "To-do")))
+      .when(!framed && Boolean(find(root, "notes")), (el) => el.child(panelButton("notes", "Notes")))
+      .when(!framed && enabled.includes("files"), (el) => el.child(panelButton("files", "Files")))
+      .when(!framed && enabled.includes("changes"), (el) => el.child(panelButton("changes", "Changes")));
   }
 }

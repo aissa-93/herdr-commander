@@ -9,7 +9,7 @@
 
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { settings, shared, keys } from "herdr";
+import { settings, shared, keys, layout, run } from "herdr";
 
 export function grid() {
   // The screen's scale isn't something a mod can ask for; cmdr-menubar finds it.
@@ -94,6 +94,42 @@ export function frame(t, g, { title, right = null, color = null, fill = true }, 
 
 // The plain title of a frame: text on the color behind the panel.
 export const tag = (t, g, text, bg, ink) => div().flex_none().px(g.u).h(2 * g.u).bg(bg).text_color(ink).child(text);
+
+// The right panel's views, named in its frame's top border: the shown one a chip, like
+// the shown tab. A click on another shows it; on the shown one, hides the panel (the
+// tab strip brings it back). `marks`: { view id: [text, color] } said after a name.
+export const VIEWS = [["todo", "To-do"], ["notes", "Notes"], ["files", "Files"], ["changes", "Changes"]];
+export const OWN_VIEWS = ["todo", "notes"];
+function node(n, id) {
+  if (n?.id === id) return n;
+  for (const child of n?.children ?? []) { const found = node(child, id); if (found) return found; }
+  return null;
+}
+export function views(t, g, shown, marks = {}) {
+  const body = node(layout(), "panel-body");
+  // Files and Changes only where the person keeps them (the welcome's choice).
+  const kept = shared("workspace.panels") ?? ["files", "changes"];
+  const list = VIEWS.filter(([id]) => id === shown || (node(body, id) && (OWN_VIEWS.includes(id) || kept.includes(id))));
+  return h_flex().flex_none().gap(g.u).children(list.map(([id, label]) => {
+    const on = id === shown, m = marks[id];
+    return h_flex().id(`view-${id}`).h(2 * g.u).px(g.u).gap(g.u).flex_none().items_center().cursor_pointer()
+      .bg(on ? t.raised : t.canvas).text_color(on ? t.foreground : t.muted)
+      .hover((s) => s.text_color(t.foreground))
+      .tooltip(on ? "Hide the panel" : `Show ${label}`)
+      .on_click(() => (on ? run("layout.hide", { id: "panel" }) : run("layout.select", { stack: "panel-body", child: id })))
+      .child(label)
+      .when(Boolean(m), (el) => el.child(div().text_color(m[1]).child(m[0])));
+  }));
+}
+
+// A popup's hard shadow, one cell right and down, like a TUI window's. The overlay is
+// opened with frame: "none" and `g.u` wider and taller than the popup itself; `body`
+// brings its own background and border.
+export function lifted(g, body) {
+  return div().relative().w_full().pr(g.u).pb(g.u)
+    .child(div().absolute().left(g.u).top(g.u).right(0).bottom(0).bg("#000000a0"))
+    .child(div().relative().w_full().child(body));
+}
 
 // The key a command is bound to, as the person presses it ("Ctrl+Shift+T"), or null.
 // `actions`: the action as keys.json spells it ("pane.split:right"), or several.
