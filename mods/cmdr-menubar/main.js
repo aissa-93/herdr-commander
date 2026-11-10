@@ -6,7 +6,7 @@
 //
 // It also keeps the usage meter: every few minutes it runs mods/cmdr-usage/usage.py
 // here and on each machine that has spaces, keeps the answers in shared
-// "commander.usage", and shows today's tokens; a click opens the cmdr-usage popup.
+// "commander.usage", and shows today's tokens and estimated API cost; a click opens the cmdr-usage popup.
 // Keys: cmdr-menubar.usage opens it, cmdr-menubar.todo shows or hides the to-do panel.
 //
 // Moving panes between tabs (mods/cmdr-tabs/herdr-move.py does it, terminals keep
@@ -414,6 +414,8 @@ export default class Menubar extends View {
     const used = Object.values(shared("commander.usage")?.machines ?? {});
     // A machine whose day hasn't turned yet (another time zone) still counts as today.
     const today = used.reduce((n, m) => n + Object.values(m.tools ?? {}).reduce((k, v) => k + (v[0] ?? 0), 0), 0);
+    // And what that would cost at API list prices (usage.py's estimate), once a machine has one.
+    const spent = used.some((m) => m.cost) ? used.reduce((n, m) => n + (m.cost?.[0] ?? 0), 0) : null;
     const button = (id, label, action) => div().id(id).w(G.row).h(G.row).flex_none().flex().items_center().justify_center().text_color(t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
     return h_flex().id("bar").size_full().items_center().bg(t.chrome).border_b(G.px).border_color(t.border)
@@ -437,9 +439,10 @@ export default class Menubar extends View {
       .child(h_flex().flex_none().px(2 * G.u).gap(3 * G.u).items_center().text_color(t.muted)
         .when(used.length > 0, (el) => el.child(h_flex().id("usage").gap(G.u).items_center().cursor_pointer()
           .hover((s) => s.text_color(t.foreground))
-          .tooltip("Tokens your agents used today. Click for projects and the week.")
+          .tooltip("Tokens your agents used today, and what they'd cost at API list prices. Click for projects and the week.")
           .on_mouse_down("left", stop).on_click(() => this.openUsage())
-          .child(div().text_color(t.accent).child("Σ")).child(`${compact(today)} today`)))
+          .child(div().text_color(t.accent).child("Σ")).child(`${compact(today)} today`)
+          .when(spent !== null, (el) => el.child(div().text_color(t.dim).child(`≈$${spent < 9.995 ? spent.toFixed(2) : Math.round(spent)}`)))))
         .when(blocked > 0, (el) => el.child(h_flex().id("needs").gap(G.u).items_center().cursor_pointer().text_color(t.foreground)
           .tooltip("Answer the one that has waited longest")
           .on_mouse_down("left", stop).on_click(() => run("cmdr-tree.reply"))

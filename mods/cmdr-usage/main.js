@@ -1,5 +1,7 @@
 // Commander's usage popup: the tokens your agents used today and over the last seven
 // days, by project, by day and by agent, plus Codex's own word on its weekly limit.
+// The $ switch shows the same rows as what they would have cost at API list prices
+// (usage.py prices each answer; shared "commander.usage-unit" remembers the choice).
 // The numbers are in shared "commander.usage" (cmdr-menubar runs usage.py, beside
 // this file, here and on each machine with spaces); this mod only shows them.
 //
@@ -9,10 +11,12 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, run, closeOverlay, props, theme, shared, home } from "herdr";
+import { spaces, panes, run, closeOverlay, props, theme, shared, setShared, home } from "herdr";
 import { grid, palette, faded, mix, frame, tag, lifted } from "./ui.js";
 
 const compact = (n) => (n < 1000 ? String(n) : n < 999500 ? `${Math.round(n / 1000)}k` : n < 99950000 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`);
+// Dollars, in the same few characters as `compact`.
+const money = (v) => (v < 0.005 ? "$0" : v < 9.995 ? `$${v.toFixed(2)}` : v < 999.5 ? `$${Math.round(v)}` : `$${(v / 1000).toFixed(1)}k`);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop() || path;
 // A home folder holds every project: it only claims what ran right in it.
 const homeLike = (f) => /^\/(home|Users)\/[^/]+$/.test(f) || f === "/root";
@@ -83,13 +87,16 @@ export default class Usage extends View {
 
     // Rows: one per project, then the folders nobody claims.
     const rows = new Map();
+    const usd = shared("commander.usage-unit") === "usd";
+    const fmt = usd ? money : compact;
     const add = (key, name, hue, today, week, where) => {
       const r = rows.get(key) ?? { key, name, hue, today: 0, week: 0, where };
       r.today += today; r.week += week;
       rows.set(key, r);
     };
     for (const [m, u] of machines) {
-      for (const [cwd, today, week] of u.places ?? []) {
+      for (const [cwd, tToday, tWeek, cToday, cWeek] of u.places ?? []) {
+        const [today, week] = usd ? [cToday ?? 0, cWeek ?? 0] : [tToday, tWeek];
         const pid = owner(list, m || null, cwd);
         const q = pid ? pj.list.find((x) => x.id === pid) : null;
         if (q) add(q.id, q.name, pid in hues ? colors[hues[pid] % colors.length] : null, today, week, q.machine ?? "");
@@ -103,9 +110,9 @@ export default class Usage extends View {
     const rest = loose.slice(4);
     if (rest.length) shown.push({ key: "rest", name: `${rest.length} more folders`, hue: null, today: rest.reduce((n, r) => n + r.today, 0), week: rest.reduce((n, r) => n + r.week, 0), where: "", quiet: true });
     const total = { today: all.reduce((n, r) => n + r.today, 0), week: all.reduce((n, r) => n + r.week, 0) };
-    const most = Math.max(1, ...shown.map((r) => r.week));
+    const most = Math.max(usd ? 0.01 : 1, ...shown.map((r) => r.week));
 
-    const num = (n, color) => div().w(10 * G.u).flex_none().flex().justify_end().text_color(color).child(n ? compact(n) : "·");
+    const num = (n, color) => div().w(10 * G.u).flex_none().flex().justify_end().text_color(color).child(n ? fmt(n) : "·");
     const row = (r) => {
       const ink = r.hue ?? (r.quiet || !named.includes(r) ? t.muted : t.foreground);
       return h_flex().relative().h(G.row).flex_none().px(2 * G.u).gap(G.u).items_center()
@@ -120,22 +127,26 @@ export default class Usage extends View {
 
     // The week, a bar a day: local days, the other machines' added on by position.
     const daily = [0, 0, 0, 0, 0, 0, 0];
-    for (const [, u] of machines) (u.daily ?? []).forEach((v, i) => { if (i < 7) daily[i] += v; });
+    for (const [, u] of machines) ((usd ? u.daily_cost : u.daily) ?? []).forEach((v, i) => { if (i < 7) daily[i] += v; });
     const days = (data.machines[""] ?? machines[0][1]).days ?? [];
-    const peak = Math.max(1, ...daily);
+    const peak = Math.max(usd ? 0.01 : 1, ...daily);
     const bars = h_flex().h(14 * G.u).flex_none().px(2 * G.u).gap(G.u).items_end()
       .children(daily.map((v, i) => {
         const d = days[i] ? new Date(`${days[i]}T12:00:00`) : null;
         const last = i === daily.length - 1;
         return v_flex().flex_1().min_w(0).h_full().items_center().justify_end().gap(G.u)
-          .child(div().text_color(last ? t.foreground : t.muted).child(v ? compact(v) : ""))
+          .child(div().text_color(last ? t.foreground : t.muted).child(v ? fmt(v) : ""))
           .child(div().w_full().h(Math.max(v ? 2 : 0, Math.round(((v / peak) * 6 * G.u) / G.px)) * G.px).bg(last ? t.accent : mix(t.popover, t.muted, 0.45)))
           .child(div().text_color(last ? t.foreground : t.muted).child(d ? DAY[d.getDay()] : ""));
       }));
 
     // By agent, and what Codex last said about its limit (Claude Code doesn't log one).
     const tools = {};
-    for (const [, u] of machines) for (const [k, v] of Object.entries(u.tools ?? {})) { tools[k] ??= [0, 0]; tools[k][0] += v[0]; tools[k][1] += v[1]; }
+    const at = usd ? [2, 3] : [0, 1];
+    for (const [, u] of machines) for (const [k, v] of Object.entries(u.tools ?? {})) { tools[k] ??= [0, 0]; tools[k][0] += v[at[0]] ?? 0; tools[k][1] += v[at[1]] ?? 0; }
+    // A machine whose usage.py predates prices has no `cost`: say so rather than show $0.
+    const unpricedTok = machines.reduce((n, [, u]) => n + (u.cost ? u.unpriced?.[1] ?? 0 : 0), 0);
+    const oldMachines = machines.filter(([, u]) => !u.cost).length;
     const cached = machines.reduce((n, [, u]) => n + (u.cached?.[0] ?? 0), 0);
     const limit = machines.map(([, u]) => u.codex_limit).filter(Boolean).sort((a, b) => (a.at < b.at ? 1 : -1))[0];
     const note = (text, color) => div().px(2 * G.u).flex_none().line_height(`${3 * G.u}px`).text_color(color ?? t.muted).child(text);
@@ -150,8 +161,20 @@ export default class Usage extends View {
       .child(div().flex_1().child("Project"))
       .child(div().w(10 * G.u).flex_none().flex().justify_end().child("today"))
       .child(div().w(10 * G.u).flex_none().flex().justify_end().child("7 days"));
-    const right = div().flex_none().px(G.u).h(2 * G.u).bg(t.popover).text_color(t.muted).child(`updated ${hhmm(new Date(data.at))}`);
-    return box(frame(t, G, { title: tag(t, G, "Usage · tokens", t.popover, t.foreground), right, fill: false },
+    const unit = (id, label, on) => div().id(`unit-${id}`).px(G.u).h(2 * G.u).flex_none().flex().items_center().cursor_pointer()
+      .when(on, (el) => el.bg(t.accent).text_color(t.accent_foreground))
+      .when(!on, (el) => el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)))
+      .tooltip(id === "usd" ? "What these tokens would cost at API list prices" : "Tokens")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); setShared("commander.usage-unit", id); })
+      .child(label);
+    const right = h_flex().flex_none().h(2 * G.u).bg(t.popover).items_center()
+      .child(unit("tokens", "tok", !usd)).child(unit("usd", "$", usd))
+      .child(div().flex_none().px(G.u).text_color(t.muted).child(`updated ${hhmm(new Date(data.at))}`));
+    const footnote = usd
+      ? `Estimated at API list prices from the agents' logs, cache reads included; your plan bills differently. Codex cache writes assume the default 30m lifetime.${unpricedTok ? ` ${compact(unpricedTok)} tokens from unknown models aren't priced.` : ""}${oldMachines ? ` ${oldMachines} machine(s) not priced yet.` : ""}`
+      : `Input, output and cache writes, from the agents' own logs. Cache reads are left out (${compact(cached)} today).`;
+    return box(frame(t, G, { title: tag(t, G, usd ? "Usage · API $" : "Usage · tokens", t.popover, t.foreground), right, fill: false },
       v_flex().w_full().pt(G.u).pb(G.u)
         .child(head)
         .children(shown.map(row))
@@ -165,6 +188,6 @@ export default class Usage extends View {
           .child(div().flex_1().text_color(t.muted).child(TOOLS[k] ?? k)).child(num(v[0], v[0] ? t.foreground : t.dim)).child(num(v[1], t.muted))))
         .when(Boolean(limitLine), (el) => el.child(rule()).child(note(limitLine, t.foreground)))
         .child(rule())
-        .child(note(`Input, output and cache writes, from the agents' own logs. Cache reads are left out (${compact(cached)} today).`))));
+        .child(note(footnote))));
   }
 }
