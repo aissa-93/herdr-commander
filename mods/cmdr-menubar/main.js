@@ -3,10 +3,15 @@
 // is one of those menus (a popup). Keys: cmdr-menubar.<menu id> opens a menu
 // (herdr, space, tab, pane, agent, view, help); cmdr-menubar.bigger / smaller / sharp
 // change Commander's text size.
+//
+// It also keeps the usage meter: every few minutes it runs mods/cmdr-usage/usage.py
+// here and on each machine that has spaces, keeps the answers in shared
+// "commander.usage", and shows today's tokens and their estimated API cost; a click
+// opens the cmdr-usage popup. Key: cmdr-menubar.usage opens it.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, spaces, panes, run, openOverlay, closeOverlay, props, nextCommand, exec, theme, shared, setShared, window, layout } from "herdr";
+import { agents, spaces, panes, run, openOverlay, closeOverlay, props, nextCommand, exec, theme, shared, setShared, window, layout, appHome, readTextFile } from "herdr";
 import { grid, chord, pretty, mark, bump, BUMP_MAX } from "./ui.js";
 
 function find(node, id) {
@@ -78,6 +83,10 @@ function nextGlobeMode() {
   else if (globeFrame() === null) setGlobe(0);
 }
 
+// A token count in four characters or so: 950, 386k, 2.9M.
+const compact = (n) => (n < 1000 ? String(n) : n < 999500 ? `${Math.round(n / 1000)}k` : n < 99950000 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`);
+const USAGE_EVERY = 180000;
+
 const SEP = { sep: true };
 const cmd = (label, name, args, key) => ({ label, key: key ?? name, act: () => run(name, args ?? {}) });
 
@@ -92,6 +101,7 @@ function menus() {
       cmd("Settings…", "app.settings"),
       cmd("Command palette", "app.palette"),
       cmd("Go to space or agent…", "mod.open", { name: "picker" }, "mod.open:picker"),
+      cmd("Usage…", "cmdr-menubar.usage"),
       SEP,
       cmd("Add machine…", "mod.open", { name: "machine-add" }, "mod.open:machine-add"),
       cmd("Next layout", "layout.switch"),
@@ -184,8 +194,45 @@ export default class Menubar extends View {
         if (c === "scale") nextScale();
         if (c === "globe") nextGlobeMode();
         if (c === "rescale") { setShared("commander.scale.manual", false); await this.detect(); }
+        if (c === "usage") this.openUsage();
+        if (c === "usage-refresh") this.readUsage(cx, true);
       }
     });
+    cx.timer.every(USAGE_EVERY, (cx) => this.readUsage(cx, false));
+    this.readUsage(cx, true);
+  }
+
+  // The agents' own logs, added up by the script (see it for what counts). Each machine
+  // with spaces is asked; one that doesn't answer keeps what it said last.
+  readUsage(cx, force) {
+    if (this.reading || (!force && !window().active)) return;
+    this.reading = true;
+    cx.spawn(async () => {
+      try {
+        const path = `${appHome()}/mods/cmdr-usage/usage.py`;
+        const src = await readTextFile(path);
+        if (src) {
+          const was = shared("commander.usage")?.machines ?? {};
+          const now = { at: Date.now(), machines: {} };
+          for (const on of [null, ...new Set(spaces().map((s) => s.machine).filter(Boolean))]) {
+            const key = on ?? "";
+            try {
+              const r = on ? await exec("python3", ["-c", src], { on, timeout: 60000 }) : await exec("python3", [path], { timeout: 120000 });
+              if (r.code === 0) now.machines[key] = JSON.parse(r.stdout);
+            } catch {}
+            if (!now.machines[key] && was[key]) now.machines[key] = was[key];
+          }
+          setShared("commander.usage", now);
+        }
+      } catch {}
+      this.reading = false;
+    });
+  }
+
+  openUsage() {
+    const G = grid();
+    const width = 68 * G.u;
+    openOverlay({ mod: "cmdr-usage", kind: "popup", frame: "none", width: width + G.u, height: 111 * G.u, at: { x: Math.max(0, (this.width ?? 0) - (width + 2 * G.u) * G.zoom), y: this.height ?? G.row * G.zoom } });
   }
 
   // The grid needs the screen's scale, which a mod can't ask for. Hyprland says; anywhere
@@ -250,6 +297,11 @@ export default class Menubar extends View {
     const stat = (s, text) => h_flex().gap(G.u).items_center().child(mark(t, G, s)).child(text);
     const blocked = count("blocked");
     const w = window();
+    const used = Object.values(shared("commander.usage")?.machines ?? {});
+    // A machine whose day hasn't turned yet (another time zone) still counts as today.
+    const today = used.reduce((n, m) => n + Object.values(m.tools ?? {}).reduce((k, v) => k + (v[0] ?? 0), 0), 0);
+    // And what that would cost at API list prices (usage.py's estimate), once a machine has one.
+    const spent = used.some((m) => m.cost) ? used.reduce((n, m) => n + (m.cost?.[0] ?? 0), 0) : null;
     const button = (id, label, action) => div().id(id).w(G.row).h(G.row).flex_none().flex().items_center().justify_center().text_color(t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop).on_click(action).child(label);
     return h_flex().id("bar").size_full().items_center().bg(t.chrome).border_b(G.px).border_color(t.border)
@@ -271,6 +323,12 @@ export default class Menubar extends View {
       }))
       .child(div().flex_1())
       .child(h_flex().flex_none().px(2 * G.u).gap(3 * G.u).items_center().text_color(t.muted)
+        .when(used.length > 0, (el) => el.child(h_flex().id("usage").gap(G.u).items_center().cursor_pointer()
+          .hover((s) => s.text_color(t.foreground))
+          .tooltip("Tokens your agents used today, and what they'd cost at API list prices. Click for projects and the week.")
+          .on_mouse_down("left", stop).on_click(() => this.openUsage())
+          .child(div().text_color(t.accent).child("Σ")).child(`${compact(today)} today`)
+          .when(spent !== null, (el) => el.child(div().text_color(t.dim).child(`≈$${spent < 9.995 ? spent.toFixed(2) : Math.round(spent)}`)))))
         .when(blocked > 0, (el) => el.child(h_flex().id("needs").gap(G.u).items_center().cursor_pointer().text_color(t.foreground)
           .tooltip("Answer the one that has waited longest")
           .on_mouse_down("left", stop).on_click(() => run("cmdr-tree.reply"))

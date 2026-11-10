@@ -8,7 +8,7 @@ A Herdr layout that looks and works like an old PC text-mode workbench: a menu b
 
 Top to bottom, on a near-black canvas (`#121417`), in PxPlus IBM VGA 8x16 throughout (16 device pixels tall by default):
 
-- **Menu bar**, one text row tall, full width. Left: `≡`, `Space`, `Tab`, `Pane`, `Agent`, `View`, `Help`. Right: counts of agents by state (`1 needs you`, `1 done`, `1 working`, `2 idle`), each with its mark; states with no agents are left out. Where the system draws no window buttons, minimize, maximize and close follow.
+- **Menu bar**, one text row tall, full width. Left: `≡`, `Space`, `Tab`, `Pane`, `Agent`, `View`, `Help`. Right: the usage meter (`Σ` in accent, `2.9M today`, then `≈$50` dimmed: today's tokens and what they would cost at API list prices), then counts of agents by state (`1 needs you`, `1 done`, `1 working`, `2 idle`), each with its mark; states with no agents are left out. Where the system draws no window buttons, minimize, maximize and close follow.
 - **Sidebar**, 306 px wide (180 to 480 by dragging), in a frame with its title `Spaces` set into the top border and `+ new` on the right.
   - Machines are the top level (the header is left out when there is only this computer). Under a machine: projects (your own groups), then spaces, then git worktree spaces under their checkout.
   - A space row: status mark, the agent's program icon, the space name, what the agent is on (tab name or terminal title, muted), a git tail (branch when it isn't the default one, `↑n` / `↓n`), and the time since the agent last changed state (`<1m`, `5m`, `3h`, `2d`).
@@ -45,6 +45,8 @@ Pane header: click to focus; hovering shows `→` (split right), `↓` (split do
 
 Globe: it turns west to east, 0.75° a step, eight steps a second, one revolution a minute; the light stays put and the planet turns under it. `View > Globe` goes from `revolving` to `still` (the picture stays where it stopped) to `off` (no picture, panes filled with the theme background, terminals opaque) and back; the menu stays open so the next click moves on. Turning it on again starts from the first picture.
 
+Usage: click the meter (or `≡ > Usage…`) for a popup under the bar's right end, framed `Usage · tokens`. Rows: each project's tokens today and over 7 days (in its hue, a faint band behind showing its share of the busiest), the four busiest unclaimed folders, the rest folded into `N more folders`; a Total; a bar a day for the week, today's in accent; Claude Code and Codex rows; Codex's own last word on its rate limit. `tok | $` in the frame's top border switches every number to dollars (title `Usage · API $`): each answer priced at its model's list rate, cache reads included, which the token view leaves out. The choice is remembered (shared `commander.usage-unit`). A click anywhere else closes it. The numbers refresh every 3 minutes while the window is active, and on opening the popup.
+
 Key bar: click a cell to run it. A command with no key bound is not shown.
 
 Keys added for this layout: `Ctrl+Shift+R` replies to the first waiting agent, `Ctrl+Shift+J` opens the project menu.
@@ -74,8 +76,9 @@ Mods, none with `props` of their own unless said:
 - `cmdr-tree`: the sidebar. `projects.js` keeps projects in shared `spaces.projects` (`{ list: [{ id, name, machine, folder }], of: { spaceId: projectId } }`). With `props().menu` (`space`, `project`, `machine`) the same mod draws that popup menu. Commands: `cmdr-tree.reply`, `cmdr-tree.project`. Carries the font in `fonts/`.
 - `cmdr-menubar`: the bar; with `props().menu` (a menu id) it draws that menu as a popup with `frame: "none"`. Commands: `cmdr-menubar.<herdr|space|tab|pane|agent|view|help>` open a menu; `.bigger`, `.smaller`, `.sharp`, `.scale`, `.rescale` change text size and screen scale; `.globe` moves the globe to its next setting. It also turns the globe: a 125 ms timer that, while shared `commander.globe` is `on` (the default; `still`, `off`) and `main` has a globe picture, copies `layout()`, sets `main.background.image` to the next of the 480 pictures and the `globe` node's to the one before it, and runs `layout.set`.
 - `cmdr-tabs`, `cmdr-pane` (gets `{ pane, terminal }` from the app), `cmdr-keys`.
+- `cmdr-usage` (a popup, `frame: "none"`, opened by `cmdr-menubar.usage`): only draws shared `commander.usage`. Its `usage.py` is what `cmdr-menubar` runs (`readUsage`, every 180 s while `window().active`, and on `cmdr-menubar.usage-refresh`): it reads the agents' own logs and prints today's and the week's tokens and API-price estimate by folder, day, agent and model. Projects claim a folder's usage when the folder is theirs, one of their spaces', or under one.
 - `cmdr-reply` (`props: { terminal, label? }`, a dialog) and `cmdr-notes` (the notes panel).
-- `ui.js`, the same file in five of the mods: `grid()`, `mark()`, `frame()`, `tag()`, `icon()`, `palette()`, `mix()`, `chord()`.
+- `ui.js`, the same file in six of the mods: `grid()`, `mark()`, `frame()`, `tag()`, `icon()`, `palette()`, `mix()`, `chord()`.
 
 Shipped mods it opens: `menu`, `new-menu`, `picker`, `worktree`, `files`, `changes`, `machine-add`.
 
@@ -90,6 +93,7 @@ Programs it runs and files it touches (tell the person before installing):
 - `hyprctl monitors -j` to learn the screen scale; where that isn't there, `herdr-app shot` to a temporary file and `od` on its header.
 - While the globe revolves, `layout.set` makes the app rewrite `layouts/commander.json` and its saved clicks eight times a second.
 - `cmdr-notes` reads and writes `~/.config/herdr-app/notes/<tab>.md`.
+- `python3 mods/cmdr-usage/usage.py` here, and `python3 -c <its text>` on each other machine that has spaces: it reads `~/.claude/projects/**/*.jsonl` (Claude Code) and `~/.codex/sessions/**/*.jsonl` (Codex) from the last 8 days, and keeps a cache in `~/.cache/herdr-commander-usage.json`. Nothing it reads leaves the machine.
 - `cmdr-tree` looks for `mods/retro-crew/main.js`, a crew launcher that is not part of this layout: only where that mod exists do a `Start a crew…` menu item and a `Crew` key cell (`cmdr-tree.crew`) show.
 - No network access.
 
@@ -111,6 +115,9 @@ The globe is `backgrounds/commander-earth/000.png` to `479.png`: 312 × 312 px, 
 - Menu labels have no Alt-letter hotkeys. Inside an open menu, Up, Down and Enter are handled in code but this build was only exercised with the mouse and by command.
 - The answer buttons press keys blindly: they suit agents whose prompts take `1`, `2`, `3` and Esc.
 - Animate the working mark with `.frames(...)`, never a timer.
+- **The $ figure is an estimate at API list prices**, not what a subscription bills. Prices are a hand-kept table (`PRICES` in `usage.py`, $ per million tokens: input, output, 5-minute and 1-hour cache write, cache read), matched by the longest prefix of the logged model id; a model not in it is counted as unpriced, never as $0. Claude Code's cache writes are hour-long ones (2× input); fast mode doubles Claude's rates; Haiku 5.5's 5× over 100K-token prompts is applied, other long-context surcharges are not. Update the table when prices or models change.
+- Codex logs running totals per session: an answer's usage is the difference from the one before, and a session continued from another starts with that one's total, so its first answer is the `last_token_usage`.
+- Bump `VERSION` in `usage.py` whenever an entry's shape changes, or the cache keeps the old shape.
 - **The app does not animate a layout background.** An animated GIF or WebP shows its first frame, and a picture is cached by its path, so overwriting the file changes nothing. The globe turns by naming a different file each step, through `layout.set`.
 - **A picture shown for the first time leaves its block bare for a moment**, which reads as flicker on the first revolution. That is what the `globe` wrapper is for: it shows the previous picture, already loaded, in the same place under `main`. `main` must be its only child, with no gap or padding, or the two globes won't line up.
 - **The globe has a running cost.** Measured on one Linux laptop while revolving: about 2% of one processor core, about 68 kB a second written to disk (the layout file, each step), and about 190 MB of memory for the 480 loaded pictures. `still` stops the first two. At one step a second the motion ticks visibly; that is why it is eight.
@@ -121,12 +128,14 @@ The globe is `backgrounds/commander-earth/000.png` to `479.png`: 312 × 312 px, 
 
 ## Done when
 
-- `herdr-app check` passes for each of the seven mods, and `layout.switch {name: "commander"}` shows the window with no `layouts/commander.error`.
+- `herdr-app check` passes for each of the eight mods, and `layout.switch {name: "commander"}` shows the window with no `layouts/commander.error`.
 - A screenshot enlarged 4× shows single-pixel strokes in the menu bar, tree and key bar, at zoom 0.9 and 1.
 - After `app.zoom_in`, the three bars are still exactly one text row tall.
 - A terminal reporting `state=blocked` (OSC 7501) shows `‼` on its row, raises the menu bar's `needs you` count, and appears in a red "Waiting on you" box with the last line ending in `?` from its screen; killing it removes all three.
 - `herdr-app do cmdr-menubar.view` opens the View menu directly under its label, flush with the bar.
 - Each key bar cell names a key that is bound in `keys.json`, and unbinding one removes its cell.
 - Two projects on one machine show two different hues, and their sessions carry them.
+- `python3 mods/cmdr-usage/usage.py` prints JSON whose `cost` is `[today, week]` in dollars and whose `models` lists every model in the logs; working out one model's week by hand (tokens × the table's rates) matches its `models` entry.
+- The bar shows `Σ … today ≈$…`; `herdr-app do cmdr-menubar.usage` opens the popup, and clicking `$` turns every number, the day bars and the title to dollars.
 - With the globe revolving, the number in `main`'s `background.image` in `layouts/commander.json` goes up by about eight a second and follows `479` with `000`, and screenshots taken in quick succession all show a globe.
 - `herdr-app do cmdr-menubar.globe` once stops that number; again removes `background` from `main` and `globe`, gives `pane` the fill `background` and sets `terminal_opacity` to 1; a third time puts picture `000` back and it turns again.
