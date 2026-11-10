@@ -1,0 +1,6 @@
+{
+  "layout:commander": {
+    "ctrl-shift-r": "cmdr-tree.reply",
+    "ctrl-shift-j": "cmdr-tree.project"
+  }
+}

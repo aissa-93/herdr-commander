@@ -1,0 +1,115 @@
+# Commander
+
+A Herdr layout that looks and works like an old PC text-mode workbench: a menu bar on top, a framed tree of your spaces and agents on the left, framed terminals in the middle, and a bar of your real shortcuts at the bottom. Everything is set in one 8x16 pixel font, kept on the font's own pixel grid so it stays sharp. Colors are calm and low in saturation; each agent state has its own shape as well as its own color, and whatever needs you is collected in one box with the keys to answer it.
+
+![Commander](preview.png)
+
+## What you see
+
+Top to bottom, on a near-black canvas (`#121417`), in PxPlus IBM VGA 8x16 throughout (16 device pixels tall by default):
+
+- **Menu bar**, one text row tall, full width. Left: `≡`, `Space`, `Tab`, `Pane`, `Agent`, `View`, `Help`. Right: counts of agents by state (`1 needs you`, `1 done`, `1 working`, `2 idle`), each with its mark; states with no agents are left out. Where the system draws no window buttons, minimize, maximize and close follow.
+- **Sidebar**, 306 px wide (180 to 480 by dragging), in a frame with its title `Spaces` set into the top border and `+ new` on the right.
+  - Machines are the top level (the header is left out when there is only this computer). Under a machine: projects (your own groups), then spaces, then git worktree spaces under their checkout.
+  - A space row: status mark, the agent's program icon, the space name, what the agent is on (tab name or terminal title, muted), a git tail (branch when it isn't the default one, `↑n` / `↓n`), and the time since the agent last changed state (`<1m`, `5m`, `3h`, `2d`).
+  - More agents in the same space, and sub-agents without a pane, hang under the row on tree lines (`├`, `└`).
+  - Each project has a soft hue, built from the theme's ANSI colors and kept off red, amber, green and blue. The project's name and arrow take the full hue; its sessions get a faint rail down their left, names tinted 30% toward the hue, idle dots and tree lines in the hue. Git branches are always the theme's cyan (`ansi6`).
+  - The shown space is drawn in inverse video: accent background (`#86abcf`), dark text.
+- **Waiting on you**, a second frame at the bottom of the sidebar, present only while an agent is blocked or done. Its frame and title are red (`#d77a6e`) if anything is blocked, green (`#8fb58a`) if agents are only done. Up to 3 entries: mark, icon, space name, time; then the question read from the agent's screen, or the tab name; then buttons.
+- **Tab strip**, one row: a cell per tab of the shown space (`number`, program icon, name, `+N` for extra panes, status mark, `×` on the active one), a `+`, and on the right the side-panel buttons (`Notes`, and `Files` / `Changes` when the person enabled them).
+- **Panes**, each in a 1 px frame (`#30353b`; the accent color while it has the keyboard), square corners, 5.56 px apart. Each has a header row: a tag with the pane's number, program icon and name (inverse while focused), the folder with `~` for home, the branch in cyan, and the agent's state in words (`working`, `needs you`, `done`).
+- **Side panel** (hidden until asked for), 368 px: a stack of the shipped `files` and `changes` mods and `cmdr-notes` (a markdown note per tab).
+- **Key bar**, one row: the prefix most shortcuts share (`Ctrl+Shift+`) once on the left, then a cell per command: the last key in accent, the label on a raised cell. New tab, Split →, Split ↓, Zoom, Close pane, Reply, Go to, Commands, Sidebar, Layout.
+
+Two themes ship with it: `commander` (graphite, dark: background `#1c1f23`, text `#d7dbe0`) and `commander-navy` (navy, used for the light appearance).
+
+## How it behaves
+
+Agent states, the same everywhere (tree, tabs, pane headers, menu bar, waiting box):
+
+- **blocked**: `‼` in dark ink on a red square (`#d77a6e`).
+- **done**: a green `■` (`#8fb58a`).
+- **working**: an amber block that shimmers through `░ ▒ ▓ ▒`, one step every 280 ms (`#d2b570`).
+- **idle**: a small `•`, in the project's hue or the theme's dim color.
+
+Tree: click a space to show it; right-click for its menu (move to a project, new project, rename, close, worktrees, the app's full menu); drag a space to reorder it, onto a project to file it, onto a machine header to unfile it. Click an agent row to go to it. Hovering a row shows a `reply` button. A project header folds its sessions, counts them, and its `+` starts a new session in the project's folder. A machine header's `+` starts a space there; an unreachable machine says so in red, and one that needs a login offers `Log in ►`.
+
+Waiting box: a blocked entry has `1 Yes`, `2`, `3` and `Esc`, which press that key in the agent's terminal; every entry has `Reply` (a dialog showing the agent's last lines and a text field, sent to the agent) and `Open` (go to its pane).
+
+Menus: click a label to open it under the bar. Each item shows the key it is bound to, read live from `keys.json`. Esc closes it. View holds Sidebar, Notes, text size (`Bigger text`, `Smaller text`, `Sharpest text`), `Screen scale`, and the app's zoom.
+
+Tabs: click to show, double-click to rename, drag to reorder, right-click for the tab menu, wheel for next and previous. `+` opens the shipped new-tab menu. The side panel's open view is remembered per space.
+
+Pane header: click to focus; hovering shows `→` (split right), `↓` (split down), `Z` (zoom) and `×` (close).
+
+Key bar: click a cell to run it. A command with no key bound is not shown.
+
+Keys added for this layout: `Ctrl+Shift+R` replies to the first waiting agent, `Ctrl+Shift+J` opens the project menu.
+
+## Built from
+
+`layouts/commander.json`: a root `column`, `titlebar: "none"`, not resizable, background `canvas`, `font` and `ui_font` "PxPlus IBM VGA 8x16", `font_size` 14, `terminal_padding` [8, 6], `theme: { light: "commander-navy", dark: "commander" }`.
+
+```
+root (column)
+├─ menubar   block  cmdr-menubar   22.22 px, window_drag
+├─ body      row    padding 5.56, gap 5.56
+│  ├─ sidebar  block  cmdr-tree    305.56 px, min 180, max 480
+│  └─ work     column gap 5.56
+│     ├─ tabs       block  cmdr-tabs   22.22 px
+│     └─ work-body  row
+│        ├─ main    block  { tab: "active", pane: { header: cmdr-pane (top, always, 20.83 px),
+│        │                   border 1 px "border", focus 1 px "accent", radius 0, gap 5.56, lone: true } }
+│        └─ panel   column, hidden, 368 px → panel-body (stack: files, changes, notes = cmdr-notes)
+└─ keybar    block  cmdr-keys      22.22 px
+```
+
+Mods, none with `props` of their own unless said:
+
+- `cmdr-tree`: the sidebar. `projects.js` keeps projects in shared `spaces.projects` (`{ list: [{ id, name, machine, folder }], of: { spaceId: projectId } }`). With `props().menu` (`space`, `project`, `machine`) the same mod draws that popup menu. Commands: `cmdr-tree.reply`, `cmdr-tree.project`. Carries the font in `fonts/`.
+- `cmdr-menubar`: the bar; with `props().menu` (a menu id) it draws that menu as a popup with `frame: "none"`. Commands: `cmdr-menubar.<herdr|space|tab|pane|agent|view|help>` open a menu; `.bigger`, `.smaller`, `.sharp`, `.scale`, `.rescale` change text size and screen scale.
+- `cmdr-tabs`, `cmdr-pane` (gets `{ pane, terminal }` from the app), `cmdr-keys`.
+- `cmdr-reply` (`props: { terminal, label? }`, a dialog) and `cmdr-notes` (the notes panel).
+- `ui.js`, the same file in five of the mods: `grid()`, `mark()`, `frame()`, `tag()`, `icon()`, `palette()`, `mix()`, `chord()`.
+
+Shipped mods it opens: `menu`, `new-menu`, `picker`, `worktree`, `files`, `changes`, `machine-add`.
+
+`herdr` functions: `spaces`, `machines`, `panes`, `agents`, `terminals`, `focused`, `layout`, `theme`, `settings`, `keys`, `shared` / `setShared`, `props`, `nextCommand`, `openOverlay` / `closeOverlay`, `setAgentOrder`, `run`, `exec`, `hc`, `watchFolder`, `readTextFile` / `writeTextFile`, `window`, `home`, `appHome`.
+
+Commands it runs: `space.select`, `space.new`, `space.rename`, `space.close`, `space.move`, `space.next`, `space.prev`, `tab.new`, `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.next`, `tab.prev`, `pane.focus`, `pane.go`, `pane.split`, `pane.zoom`, `pane.close`, `terminal.peek`, `agent.next`, `agent.prev`, `layout.resize`, `layout.toggle`, `layout.show`, `layout.hide`, `layout.select`, `layout.switch`, `mod.open`, `app.palette`, `app.help`, `app.settings`, `app.check_updates`, `app.whats_new`, `app.feedback`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`, `window.minimize`, `window.maximize`, `window.close`.
+
+Programs it runs and files it touches (tell the person before installing):
+
+- `git` in each space's folder (branch, ahead/behind, changes, worktrees), on the space's own machine.
+- `hc read` on waiting agents every 4 seconds (to find the question), `hc keys` and `hc send` when you answer, `hc machine ls`; `Log in ►` opens a tab running `hc machine login <machine>`.
+- `hyprctl monitors -j` to learn the screen scale; where that isn't there, `herdr-app shot` to a temporary file and `od` on its header.
+- `cmdr-notes` reads and writes `~/.config/herdr-app/notes/<tab>.md`.
+- `cmdr-tree` looks for `mods/retro-crew/main.js`, a crew launcher that is not part of this layout: only where that mod exists do a `Start a crew…` menu item and a `Crew` key cell (`cmdr-tree.crew`) show.
+- No network access.
+
+Art: the font is PxPlus IBM VGA 8x16 from The Ultimate Oldschool PC Font Pack by VileR (int10h.org), under CC BY-SA 4.0; its license is in `mods/cmdr-tree/fonts/`. Program icons are the app's own.
+
+## Watch out
+
+- **Nothing is sized in plain px.** The font is sharp only at 16 device pixels (or a whole multiple), so every size is counted in `u`, half a character cell: `u = (16k + bump) / 2 / (scale × zoom)`, where `k` is the multiple nearest an 11 px label. Text is `2u`, a row `4u`, one device pixel `1 / (scale × zoom)`. A build that writes `text_size(12)` gets blurred strokes.
+- **A mod can't ask for the screen scale.** `cmdr-menubar` finds it (shared `commander.scale`): Hyprland first, else the frame's pixel width over the bar's width from `on_size_change`, which is already in window px with zoom applied. Without `sh` (Windows) it stays 1.6 until the person picks one in View > Screen scale; a wrong scale means soft text, nothing worse.
+- **Bars follow the zoom.** A row's height in layout px changes with zoom and text size, so `cmdr-menubar` resizes `menubar`, `tabs` and `keybar` with `layout.resize`. The pane header's height (20.83) and the sidebar's width are fixed in the layout file; raise them by hand for much bigger text.
+- `Bigger text` adds 2 device pixels a step (shared `commander.bump`, 0 to 16). Boxes stay on whole pixels; letters are softer off the font's native size.
+- Popup `at` is in window px before zoom (multiply mod px by zoom); overlay `width` and `height` are after it.
+- Mods can't import across folders: `ui.js` is copied into each mod. Change one, copy it to the others.
+- Terminal text is the layout's `font_size` 14, not on the grid; it is as sharp as the app's own text rendering makes it.
+- The pane title is a tag in the header's corner, not set into the border line: the app draws pane borders.
+- `cmdr-reply`, `cmdr-notes` and the shipped menus it opens are sized in ordinary px, not on the grid.
+- Menu labels have no Alt-letter hotkeys. Inside an open menu, Up, Down and Enter are handled in code but this build was only exercised with the mouse and by command.
+- The answer buttons press keys blindly: they suit agents whose prompts take `1`, `2`, `3` and Esc.
+- Animate the working mark with `.frames(...)`, never a timer.
+
+## Done when
+
+- `herdr-app check` passes for each of the seven mods, and `layout.switch {name: "commander"}` shows the window with no `layouts/commander.error`.
+- A screenshot enlarged 4× shows single-pixel strokes in the menu bar, tree and key bar, at zoom 0.9 and 1.
+- After `app.zoom_in`, the three bars are still exactly one text row tall.
+- A terminal reporting `state=blocked` (OSC 7501) shows `‼` on its row, raises the menu bar's `needs you` count, and appears in a red "Waiting on you" box with the last line ending in `?` from its screen; killing it removes all three.
+- `herdr-app do cmdr-menubar.view` opens the View menu directly under its label, flush with the bar.
+- Each key bar cell names a key that is bound in `keys.json`, and unbinding one removes its cell.
+- Two projects on one machine show two different hues, and their sessions carry them.
