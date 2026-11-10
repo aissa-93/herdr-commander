@@ -1,12 +1,13 @@
 // Commander's pane header: a tag in the frame's top-left corner with the pane's number
 // and what runs in it (inverse while the pane has the keyboard), its folder, and the
-// agent's state on the right. Hover for split, zoom and close.
+// agent's state on the right. Hover for split, move to a new tab, zoom and close (the
+// move is cmdr-menubar's: see "commander.move" there).
 //   { "tab": "active", "pane": { "header": { "content": { "mod": "cmdr-pane" } } } }
 // Props from the app: { pane, terminal }. Click: focus the pane.
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home } from "herdr";
+import { panes, props, run, theme, home, setShared } from "herdr";
 import { grid, mark, icon } from "./ui.js";
 
 function folder(cwd) {
@@ -27,14 +28,21 @@ export default class Pane extends View {
     const p = all.find((x) => x.pane === props()?.pane);
     if (!p) return div();
     const pane = p.pane;
-    const n = all.filter((x) => x.tab === p.tab).findIndex((x) => x.pane === pane) + 1;
+    const siblings = all.filter((x) => x.tab === p.tab);
+    const n = siblings.findIndex((x) => x.pane === pane) + 1;
+    const movable = Boolean(p.terminal) && siblings.length > 1;
     const name = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || p.mod || "shell";
     const button = (id, label, tip, command, args) => div().id(id).w(3 * G.u).h_full().flex_none().flex().items_center().justify_center()
       .text_color(t.muted).cursor_pointer()
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .tooltip(tip)
-      .on_click((_e, cx) => { cx.stop_propagation(); run(command, args); })
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        if (typeof command === "function") command();
+        else run(command, args);
+      })
       .child(label);
+    const toTab = () => { setShared("commander.move", { op: "tab", pane, at: Date.now() }); run("cmdr-menubar.move"); };
     return h_flex()
       .id(`pane-head-${pane}`)
       .size_full()
@@ -57,6 +65,7 @@ export default class Pane extends View {
       .when(this.hovered, (el) => el.child(h_flex().h_full().flex_none()
         .child(button(`ph-r-${pane}`, "→", "Split right", "pane.split", { direction: "right", pane }))
         .child(button(`ph-d-${pane}`, "↓", "Split down", "pane.split", { direction: "down", pane }))
+        .when(movable, (el) => el.child(button(`ph-t-${pane}`, "T", "Move to a new tab", toTab)))
         .child(button(`ph-z-${pane}`, "Z", p.zoomed ? "Unzoom" : "Zoom", "pane.zoom", { pane }))
         .child(button(`ph-x-${pane}`, "×", "Close pane", "pane.close", { pane }))));
   }

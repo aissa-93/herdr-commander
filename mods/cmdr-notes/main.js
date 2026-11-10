@@ -1,30 +1,44 @@
-// Notes for the shown tab: what you asked its agent, what's left. One markdown
-// file per tab in ~/.config/herdr-app/notes/, saved as you type.
-import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { focused, spaces, theme, settings, appHome, readTextFile, writeTextFile } from "herdr";
+// Notes for the shown space: what it's for, what you asked its agents, what's left.
+// One markdown file per space in ~/.config/herdr-app/notes/, saved as you type
+// (herdr-todo's hook points the space's agents at it, to read).
+//
+// It looks like the to-do panel beside it: on the canvas, in a frame whose top border
+// names the panel's views. A * after "Notes" means what you typed isn't saved yet.
+import { View, div } from "gpui-kit";
+import { v_flex, Editor, EditorState } from "gpui-base";
+import { focused, spaces, theme, settings, shared, appHome, readTextFile, writeTextFile } from "herdr";
+import { grid, frame, tag, views } from "./ui.js";
 
-const pathOf = (tab) => `${appHome()}/notes/${tab.replace(/[^A-Za-z0-9_-]/g, "_")}.md`;
+const pathOf = (space) => `${appHome()}/notes/${space.replace(/[^A-Za-z0-9_-]/g, "_")}.md`;
 
 export default class Notes extends View {
   init(_props, cx) {
-    this.tab = null;      // the tab whose notes are in the editor
+    this.tab = null;      // the space whose notes are in the editor
     this.disk = null;     // what the file held when last read or written (null: no file)
     this.loading = false; // set_value fires "change"; that isn't the person typing
     this.dirty = false;
-    this.state = EditorState.new({ language: "markdown", value: "", line_numbers: false, folding: false, soft_wrap: true,
-      font_family: settings().font_family, font_size: 13 });
+    this.editor("");
+    // Follow the shown space. Cheap: nothing redraws unless it changed.
+    cx.timer.every(400, (cx) => {
+      // An editor's text size is set when it's made: a new one when Commander's changes.
+      if (grid().text !== this.size && !this.switching) { this.editor(this.state.value()); cx.notify(); }
+      const tab = focused()?.space ?? null;
+      if (tab !== this.tab && !this.switching) cx.spawn(async (cx) => this.open(tab, cx));
+    });
+  }
+
+  editor(value) {
+    this.state?.release();
+    this.size = grid().text;
+    this.state = EditorState.new({ language: "markdown", value, line_numbers: false, folding: false, soft_wrap: true,
+      font_family: settings().font_family, font_size: this.size });
     this.state.on("change", (_e, cx) => {
       if (this.loading) return;
       this.dirty = true;
+      cx.notify();
       // One write per pause in typing, not per key.
       const stamp = (this.stamp = (this.stamp ?? 0) + 1);
-      cx.timer.after(700, (cx) => { if (stamp === this.stamp) cx.spawn(async () => this.save()); });
-    });
-    // Follow the shown tab. Cheap: nothing redraws unless it changed.
-    cx.timer.every(400, (cx) => {
-      const tab = focused()?.tab ?? null;
-      if (tab !== this.tab && !this.switching) cx.spawn(async (cx) => this.open(tab, cx));
+      cx.timer.after(700, (cx) => { if (stamp === this.stamp) cx.spawn(async (cx) => { await this.save(); cx.notify(); }); });
     });
   }
 
@@ -66,19 +80,18 @@ export default class Notes extends View {
 
   render() {
     const t = theme();
-    const f = focused();
-    const space = spaces().find((s) => s.id === f?.space);
-    const tab = space?.tabs.find((x) => x.id === this.tab);
-    const name = tab ? (/^tb\d+$/.test(tab.name) ? `Tab ${space.tabs.indexOf(tab) + 1}` : tab.name) : "";
-    return v_flex().size_full().min_h(0).bg(t.background).text_color(t.foreground)
-      .child(h_flex().h(34).px(12).gap(8).flex_none().items_center().border_b(1).border_color(t.border).text_size(12)
-        .child(svg("mods/cmdr-notes/notes.svg").size(14).text_color(t.muted))
-        .child(div().text_color(t.muted).child("Notes"))
-        .when(Boolean(name), (el) => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`· ${space?.name ?? ""} / ${name}`))))
-      .child(this.tab
-        ? Editor.new(this.state).flex_1().min_h(0).px(8).pt(6)
-        : div().p(12).text_size(12).text_color(t.dim).child("No tab shown."))
-      .child(div().h(22).px(12).flex_none().flex().items_center().text_size(10.5).text_color(t.dim)
-        .child(this.dirty ? "editing…" : this.disk == null ? "Empty: type to start notes for this tab" : "saved"));
+    const G = grid();
+    const space = spaces().find((s) => s.id === this.tab);
+    const name = space ? shared("space.labels")?.[space.id] ?? space.name : "";
+    // What isn't done in this space's to-do list (cmdr-todo publishes the counts).
+    const open = (space && shared("commander.todo")?.[space.id]) || 0;
+    const title = views(t, G, "notes", { todo: open ? [String(open), t.dim] : null, notes: this.dirty ? ["*", t.working] : null });
+    const which = name ? tag(t, G, name, t.canvas, t.muted).max_w(36 * G.u).truncate() : null;
+    const hint = (text) => div().flex_none().px(2 * G.u).py(G.u).line_height(`${3 * G.u}px`).whitespace_normal().text_color(t.dim).child(text);
+    const body = v_flex().size_full().min_h(0)
+      .child(this.tab ? Editor.new(this.state).flex_1().min_h(0).px(G.u).pt(G.u) : hint("No space shown."))
+      .when(Boolean(this.tab) && this.disk == null && !this.dirty, (el) => el.child(hint(`Nothing noted for ${name || "this space"} yet. Click above and type.`)));
+    return div().size_full().bg(t.canvas).text_size(G.text).line_height(`${G.text}px`).text_color(t.foreground)
+      .child(frame(t, G, { title, right: which }, body));
   }
 }

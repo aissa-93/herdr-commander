@@ -6,13 +6,23 @@
 //
 // It also keeps the usage meter: every few minutes it runs mods/cmdr-usage/usage.py
 // here and on each machine that has spaces, keeps the answers in shared
-// "commander.usage", and shows today's tokens and their estimated API cost; a click
-// opens the cmdr-usage popup. Key: cmdr-menubar.usage opens it.
+// "commander.usage", and shows today's tokens and estimated API cost; a click opens the cmdr-usage popup.
+// Keys: cmdr-menubar.usage opens it, cmdr-menubar.todo shows or hides the to-do panel.
+//
+// Moving panes between tabs (mods/cmdr-tabs/herdr-move.py does it, terminals keep
+// running): cmdr-menubar.pane-to-tab puts the focused pane in a new tab,
+// cmdr-menubar.tab-to-split puts the shown tab's panes beside a pane of the tab before
+// it (the first tab: after it). Other mods ask with shared "commander.move" =
+// { op: "tab", pane } | { op: "join", tab, pane, direction } and then run
+// cmdr-menubar.move: this copy stays shown, so the move and its error toast finish
+// even when the pane or popup that asked is gone. With props { menu: "tab-ctx", tab }
+// this mod is cmdr-tabs' right-click menu for that tab (cmdr-tabs sets shared
+// "commander.tabmenu" to the tab and runs cmdr-menubar.tab-menu).
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, spaces, panes, run, openOverlay, closeOverlay, props, nextCommand, exec, theme, shared, setShared, window, layout, appHome, readTextFile } from "herdr";
-import { grid, chord, pretty, mark, bump, BUMP_MAX } from "./ui.js";
+import { agents, spaces, panes, run, openOverlay, closeOverlay, props, nextCommand, exec, theme, shared, setShared, window, layout, appHome, readTextFile, notify } from "herdr";
+import { grid, chord, pretty, mark, bump, BUMP_MAX, lifted } from "./ui.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -90,6 +100,53 @@ const USAGE_EVERY = 180000;
 const SEP = { sep: true };
 const cmd = (label, name, args, key) => ({ label, key: key ?? name, act: () => run(name, args ?? {}) });
 
+// ---- moving panes between tabs ----
+
+// Asks the shown bar copy to move (see the top). Safe from a popup or a pane header.
+function requestMove(req) {
+  setShared("commander.move", { ...req, at: Date.now() });
+  run("cmdr-menubar.move");
+}
+
+// A tab's panes in order, and what a menu calls it.
+const tabPanes = (id) => panes().filter((p) => p.tab === id);
+function tabLabel(c) {
+  const all = tabPanes(c.id);
+  const program = all.find((p) => p.program?.agent)?.program ?? all[0]?.program;
+  return `${c.index} · ${c.named ? c.name : program?.name ?? "Terminal"}`;
+}
+// Where a tab joining `target` goes: beside its last terminal pane (the right/bottom one).
+const landing = (target) => tabPanes(target).filter((p) => p.terminal).at(-1)?.pane;
+
+// The focused pane into a new tab: only a terminal, and only from a tab with another pane.
+function canPaneToTab(pane) {
+  return Boolean(pane?.terminal) && tabPanes(pane.tab).length > 1;
+}
+// The tab the shown one would join by key: the one before it, else the one after.
+function joinTarget(space) {
+  const tabs = (space?.tabs ?? []).filter((c) => !c.settled);
+  const i = tabs.findIndex((c) => c.active);
+  return i < 0 ? null : tabs[i - 1] ?? tabs[i + 1] ?? null;
+}
+
+// A tab's right-click menu (cmdr-tabs): rename, new, join into each other tab, close.
+const JOIN_MAX = 9;
+function tabMenu(id) {
+  const space = spaces().find((s) => s.tabs.some((c) => c.id === id));
+  if (!space) return [];
+  const others = space.tabs.filter((c) => c.id !== id && landing(c.id)).slice(0, JOIN_MAX);
+  const movable = tabPanes(id).some((p) => p.terminal);
+  return [
+    cmd("Rename…", "tab.rename", { id }, "tab.rename"),
+    cmd("New tab", "tab.new", { space: space.id }, "tab.new"),
+    ...(movable && others.length ? [SEP, ...others.map((c) => ({ label: `Join into ${tabLabel(c)}`, act: () => requestMove({ op: "join", tab: id, pane: landing(c.id), direction: "right" }) }))] : []),
+    SEP,
+    cmd("Close tab", "tab.close", { id }, "tab.close"),
+  ];
+}
+// A menu's height: rows, separators and the frame, in the menu's px.
+const menuHeight = (items, G) => items.reduce((h, it) => h + (it.sep ? 2 * G.u + G.px : G.row), 0) + 2 * G.u + 2 * G.px;
+
 // Every menu. `key`: the action as keys.json spells it, to show its binding.
 function menus() {
   const space = spaces().find((s) => s.active);
@@ -124,6 +181,8 @@ function menus() {
       cmd("New tab", "tab.new"),
       { label: "New agent…", act: () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }) },
       cmd("Rename…", "tab.rename"),
+      ...(joinTarget(space) && tabPanes(space.tabs.find((c) => c.active)?.id).some((p) => p.terminal)
+        ? [cmd(`Join into tab ${joinTarget(space).index}`, "cmdr-menubar.tab-to-split")] : []),
       cmd("Close tab", "tab.close"),
       SEP,
       cmd("Next tab", "tab.next"),
@@ -133,6 +192,7 @@ function menus() {
       cmd("Split right", "pane.split", { direction: "right" }, "pane.split:right"),
       cmd("Split down", "pane.split", { direction: "down" }, "pane.split:down"),
       cmd("Zoom", "pane.zoom"),
+      ...(canPaneToTab(pane) ? [cmd("Move to new tab", "cmdr-menubar.pane-to-tab")] : []),
       cmd("Close pane", "pane.close"),
       SEP,
       cmd("Go left", "pane.go", { direction: "left" }, "pane.go:left"),
@@ -148,18 +208,21 @@ function menus() {
       ...(shared("commander.crew") ? [cmd("Start a crew…", "cmdr-tree.crew")] : []),
     ] },
     { id: "view", label: "View", items: [
-      cmd("Sidebar", "layout.toggle", { id: "sidebar" }, "layout.toggle:sidebar"),
+      // `on`: a thing that is shown or not, drawn with a box in front ([x] / [ ]).
+      { ...cmd("Sidebar", "layout.toggle", { id: "sidebar" }, "layout.toggle:sidebar"), on: !find(layout(), "sidebar")?.hidden },
       ...view("notes", "Notes"),
+      ...view("todo", "To-do").map((it) => ({ ...it, key: "cmdr-menubar.todo" })),
       // Files and Changes only where the person keeps them (the welcome's choice).
       ...(enabled.includes("files") ? view("files", "Files") : []),
       ...(enabled.includes("changes") ? view("changes", "Changes") : []),
       SEP,
       // Commander's own text, apart from the app's zoom (which the terminals follow).
-      { label: `Bigger text (${grid().size}px)`, stay: true, act: () => setShared("commander.bump", Math.min(BUMP_MAX, bump() + 2)) },
+      // `value`: what a setting is now, said at the row's right end.
+      { label: "Bigger text", value: `${grid().size}px`, stay: true, act: () => setShared("commander.bump", Math.min(BUMP_MAX, bump() + 2)) },
       { label: "Smaller text", stay: true, act: () => setShared("commander.bump", Math.max(0, bump() - 2)) },
       { label: "Sharpest text", act: () => setShared("commander.bump", 0) },
-      { label: `Screen scale: ${Number(shared("commander.scale")) || 1.6}`, stay: true, act: nextScale },
-      { label: `Globe: ${SAYS[globeMode()]}`, stay: true, act: nextGlobeMode },
+      { label: "Screen scale", value: Number(shared("commander.scale")) || 1.6, stay: true, act: nextScale },
+      { label: "Globe", value: SAYS[globeMode()], stay: true, act: nextGlobeMode },
       SEP,
       cmd("Zoom in", "app.zoom_in"),
       cmd("Zoom out", "app.zoom_out"),
@@ -196,10 +259,62 @@ export default class Menubar extends View {
         if (c === "rescale") { setShared("commander.scale.manual", false); await this.detect(); }
         if (c === "usage") this.openUsage();
         if (c === "usage-refresh") this.readUsage(cx, true);
+        if (c === "todo") panel("todo")?.toggle();
+        if (c === "pane-to-tab") {
+          const pane = panes().find((p) => p.focused);
+          if (canPaneToTab(pane)) this.move(cx, { op: "tab", pane: pane.pane });
+          else notify({ title: "Nothing to move", body: "The pane is its tab's only one, or not a terminal.", level: "info" });
+        }
+        if (c === "tab-to-split") {
+          const space = spaces().find((s) => s.active);
+          const from = space?.tabs.find((c) => c.active), to = joinTarget(space);
+          const pane = to && landing(to.id);
+          if (from && pane) this.move(cx, { op: "join", tab: from.id, pane, direction: "right" });
+          else notify({ title: "Nothing to join", body: "This space has no other tab with a terminal.", level: "info" });
+        }
+        // From cmdr-tabs (a right-click), else the shown tab's (a key).
+        if (c === "tab-menu") {
+          const id = shared("commander.tabmenu") ?? spaces().find((s) => s.active)?.tabs.find((t) => t.active)?.id;
+          setShared("commander.tabmenu", null);
+          if (id) this.openTabMenu(id);
+        }
+        if (c === "move") {
+          const req = shared("commander.move");
+          setShared("commander.move", null);
+          // A request is a moment old; anything older was left behind.
+          if (req && Date.now() - req.at < 5000) this.move(cx, req);
+        }
       }
     });
     cx.timer.every(USAGE_EVERY, (cx) => this.readUsage(cx, false));
     this.readUsage(cx, true);
+  }
+
+  // One move at a time, by the script (it waits for the core between steps).
+  move(cx, req) {
+    (this.moves ??= []).push(req);
+    if (this.moving) return;
+    this.moving = true;
+    cx.spawn(async () => {
+      while (this.moves.length) {
+        const m = this.moves.shift();
+        const args = m.op === "tab" ? ["tab", m.pane] : ["join", m.tab, m.pane, m.direction ?? "right"];
+        try {
+          const r = await exec("python3", [`${appHome()}/mods/cmdr-tabs/herdr-move.py`, ...args], { timeout: 60000 });
+          if (r.code !== 0) notify({ title: "Couldn't move the pane", body: (r.stderr || r.stdout).trim().split("\n").at(-1), level: "error" });
+        } catch (e) {
+          notify({ title: "Couldn't move the pane", body: String(e?.message ?? e), level: "error" });
+        }
+      }
+      this.moving = false;
+    });
+  }
+
+  // cmdr-tabs' right-click menu for a tab, at the pointer.
+  openTabMenu(id) {
+    const G = grid();
+    const items = tabMenu(id);
+    if (items.length) openOverlay({ mod: "cmdr-menubar", kind: "popup", frame: "none", width: 45 * G.u, height: menuHeight(items, G) + G.u, at: "pointer", props: { menu: "tab-ctx", tab: id } });
   }
 
   // The agents' own logs, added up by the script (see it for what counts). Each machine
@@ -281,8 +396,7 @@ export default class Menubar extends View {
     if (!m) return;
     const x = all.slice(0, n).reduce((w, k) => w + labelWidth(k, G), 0);
     // `at` is in window px before zoom; sizes are after it, like everything a mod draws.
-    const rows = m.items.reduce((h, it) => h + (it.sep ? 2 * G.u + G.px : G.row), 0);
-    openOverlay({ mod: "cmdr-menubar", kind: "popup", frame: "none", width: 44 * G.u, height: rows + 2 * G.u + 2 * G.px, at: { x: x * G.zoom, y: this.height ?? G.row * G.zoom }, props: { menu: id } });
+    openOverlay({ mod: "cmdr-menubar", kind: "popup", frame: "none", width: 45 * G.u, height: menuHeight(m.items, G) + G.u, at: { x: x * G.zoom, y: this.height ?? G.row * G.zoom }, props: { menu: id } });
   }
 
   render() {
@@ -376,22 +490,25 @@ export default class Menubar extends View {
 
   renderMenu(t) {
     const G = grid();
-    const m = menus().find((k) => k.id === props().menu);
-    const items = m?.items ?? [];
-    return v_flex().id("menu").track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx, items))
+    const items = props().menu === "tab-ctx" ? tabMenu(props().tab) : menus().find((k) => k.id === props().menu)?.items ?? [];
+    // A menu with things to show or hide keeps a column in front for their boxes.
+    const boxes = items.some((it) => "on" in it);
+    // The overlay is a cell wider and taller than the menu: its shadow (ui.js `lifted`).
+    return lifted(G, v_flex().id("menu").track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx, items))
       .w_full().py(G.u).bg(t.popover).border(G.px).border_color(t.input)
       .text_size(G.text).line_height(`${G.text}px`).text_color(t.foreground)
       .children(items.map((it, i) => {
         if (it.sep) return div().h(G.px).my(G.u).flex_none().bg(t.border);
         const on = this.at === i;
         const key = it.key ? pretty(chord(it.key)) : "";
-        return h_flex().id(`item-${i}`).h(G.row).px(2 * G.u).gap(2 * G.u).flex_none().items_center().cursor_pointer()
+        return h_flex().id(`item-${i}`).h(G.row).px(2 * G.u).flex_none().items_center().cursor_pointer()
           .when(on, (el) => el.bg(t.accent).text_color(t.accent_foreground))
           .on_hover((over, cx) => { if (over && this.at !== i) { this.at = i; cx.notify(); } })
           .on_click(() => this.pick(it))
+          .when(boxes, (el) => el.child(div().w(4 * G.u).flex_none().when(!it.on && !on, (x) => x.text_color(t.dim)).child("on" in it ? (it.on ? "[x]" : "[ ]") : "")))
           .child(div().flex_1().min_w(0).truncate().child(it.label))
-          .when(Boolean(it.on), (el) => el.child("■"))
-          .when(Boolean(key), (el) => el.child(div().flex_none().text_color(on ? t.accent_foreground : t.muted).child(key)));
-      }));
+          .when(it.value != null, (el) => el.child(div().flex_none().ml(2 * G.u).text_color(on ? t.accent_foreground : t.accent).child(String(it.value))))
+          .when(Boolean(key), (el) => el.child(div().flex_none().ml(2 * G.u).text_color(on ? t.accent_foreground : t.muted).child(key)));
+      })));
   }
 }

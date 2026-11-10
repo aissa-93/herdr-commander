@@ -172,7 +172,7 @@ export default class Usage extends View {
       .child(unit("tokens", "tok", !usd)).child(unit("usd", "$", usd))
       .child(div().flex_none().px(G.u).text_color(t.muted).child(`updated ${hhmm(new Date(data.at))}`));
     const footnote = usd
-      ? `Estimated at API list prices from the agents' logs, cache reads included; your plan bills differently.${unpricedTok ? ` ${compact(unpricedTok)} tokens from unknown models aren't priced.` : ""}${oldMachines ? ` ${oldMachines} machine(s) not priced yet.` : ""}`
+      ? `Estimated at API list prices from the agents' logs, cache reads included; your plan bills differently. Codex cache writes assume the default 30m lifetime.${unpricedTok ? ` ${compact(unpricedTok)} tokens from unknown models aren't priced.` : ""}${oldMachines ? ` ${oldMachines} machine(s) not priced yet.` : ""}`
       : `Input, output and cache writes, from the agents' own logs. Cache reads are left out (${compact(cached)} today).`;
     return box(frame(t, G, { title: tag(t, G, usd ? "Usage · API $" : "Usage · tokens", t.popover, t.foreground), right, fill: false },
       v_flex().w_full().pt(G.u).pb(G.u)

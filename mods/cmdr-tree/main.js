@@ -6,13 +6,21 @@
 // agent: status mark, what it's on, how long since it changed. More agents in the
 // space, and sub-agents, hang under it on tree lines. Click a space to switch,
 // right-click for its menu, drag to reorder; click an agent to go to it, right-click
-// to reply. Keys: cmdr-tree.reply, cmdr-tree.crew, cmdr-tree.project.
+// to reply. Keys: cmdr-tree.reply, cmdr-tree.crew, cmdr-tree.project, cmdr-tree.activity
+// (fold the log), cmdr-tree.activity-clear.
+//
+// A row's checkout also says how its branch stands on GitHub (asked of `gh`, where the
+// repo has a GitHub remote): its pull request's number and checks, else the branch's
+// last CI run. Click it to open the page.
+//
+// Between the tree and the waiting box, Activity: what finished and what asked for
+// you, newest first, kept across restarts. Click a line to go to that agent.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, machines, panes, agents, terminals, focused, run, openOverlay, closeOverlay, props, nextCommand, exec, hc, theme, shared, setShared, watchFolder, window, home, appHome, readTextFile, setAgentOrder } from "herdr";
 import { projects, fileSpace, addProject, editProject, removeProject, newSession, adopt, filing, RANK } from "./projects.js";
-import { grid, mark, duration, frame, tag, hairline, icon, mix, faded, palette } from "./ui.js";
+import { grid, mark, duration, frame, tag, hairline, icon, mix, faded, palette, lifted } from "./ui.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -65,9 +73,41 @@ function question(text) {
   return null;
 }
 
+// When something happened: the time today, the date before that.
+function clock(at, now) {
+  const d = new Date(at), p = (n) => String(n).padStart(2, "0");
+  return now - at < 20 * 3600000 ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${p(d.getMonth() + 1)}/${p(d.getDate())}`;
+}
+
+// GitHub's checks on a commit as one word: any failing is "fail", else any still
+// running is "pending", else "pass"; null when there are none.
+function rollup(list) {
+  let pass = 0, fail = 0, pending = 0;
+  const bad = [];
+  for (const c of list ?? []) {
+    const s = c.__typename === "StatusContext" ? c.state : c.status === "COMPLETED" ? c.conclusion : "PENDING";
+    if (/^(SUCCESS|NEUTRAL|SKIPPED)$/i.test(s ?? "")) pass++;
+    else if (!s || /^(PENDING|EXPECTED|QUEUED|IN_PROGRESS|WAITING|REQUESTED)$/i.test(s)) pending++;
+    else { fail++; bad.push(c.name ?? c.context ?? "a check"); }
+  }
+  const state = fail ? "fail" : pending ? "pending" : pass ? "pass" : null;
+  const says = [fail && `${fail} failing (${bad.slice(0, 3).join(", ")})`, pending && `${pending} running`, pass && `${pass} passed`].filter(Boolean).join(", ");
+  return { state, says };
+}
+
+// How long an answer about a branch is good for.
+const PR_TTL = { pending: 30000, settled: 180000, none: 600000, never: 3600000 };
+
 export default class Tree extends View {
   init(_props, cx) {
     if (props()?.menu) return this.menuInit(cx);
+    this.started = Date.now();
+    // What happened, newest first: { at, k: "done" | "blocked", addr, label, took, icon, tint }.
+    this.log = JSON.parse(localStorage.getItem("activity") ?? "[]");
+    this.logFolded = localStorage.getItem("activity.folded") === "1";
+    this.pr = {}; // repo and branch -> { at, ttl, v: its pull request or last CI run, null: none }
+    this.prPending = new Map(); // repo and branch -> a where() to ask from
+    this.filed = {}; // space -> the project its row is under
     this.projectsFolded = new Set(JSON.parse(localStorage.getItem("projects.folded") ?? "[]"));
     this.known = new Set(spaces().map((s) => s.id));
     // Keys: `projects.project` opens the project menu for the focused space's machine.
@@ -81,6 +121,9 @@ export default class Tree extends View {
         // Answer the agent that has waited longest (blocked, then done), else the one in front.
         if (c === "reply") this.replyNext();
         if (c === "crew") this.newCrew();
+        // The activity log, for keys: cmdr-tree.activity folds it, cmdr-tree.activity-clear empties it.
+        if (c === "activity") { this.logFolded = !this.logFolded; localStorage.setItem("activity.folded", this.logFolded ? "1" : "0"); }
+        if (c === "activity-clear") { this.log = []; localStorage.setItem("activity", "[]"); }
         cx.notify();
       }
     });
@@ -233,7 +276,7 @@ export default class Tree extends View {
       while (this.pending.size) {
         const keys = [...this.pending];
         this.pending.clear();
-        for (const key of keys) await this.check(key, cx);
+        for (const key of keys) { await this.check(key, cx); this.refreshPrs(cx); }
       }
       const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
       for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
@@ -278,12 +321,95 @@ export default class Tree extends View {
         }
       }
       this.git[key] = info;
+      this.prDue(key);
       if (!on) this.watch(repo, cx);
     } catch {
       // Couldn't ask (the machine is away): keep what it showed, look again later.
       this.git[key] ??= null;
       this.unsure.add(key);
     }
+  }
+
+  // ---- GitHub: a branch's pull request, else its last CI run ----
+
+  // Asked again when its git is looked at and the last answer is old (see PR_TTL):
+  // often while checks run, rarely where there was nothing to find.
+  prDue(key) {
+    const g = this.git[key];
+    if (!g?.branch) return;
+    const pk = `${g.repo}|${g.branch}`;
+    const c = this.pr[pk];
+    if (!c || Date.now() - c.at >= c.ttl) this.prPending.set(pk, key);
+  }
+
+  refreshPrs(cx) {
+    if (this.prBusy || !this.prPending.size) return;
+    this.prBusy = true;
+    cx.spawn(async (cx) => {
+      while (this.prPending.size) {
+        const [pk, key] = this.prPending.entries().next().value;
+        this.prPending.delete(pk);
+        const was = JSON.stringify(this.pr[pk]?.v ?? null);
+        this.pr[pk] = await this.askGithub(key);
+        if (JSON.stringify(this.pr[pk].v) !== was) cx.notify();
+      }
+      this.prBusy = false;
+    });
+  }
+
+  // `gh` in that checkout, on its machine. Anything it can't answer (no GitHub remote,
+  // not logged in, no gh there) is "nothing", asked again much later.
+  async askGithub(key) {
+    const [on, cwd] = JSON.parse(key);
+    const g = this.git[key];
+    const at = Date.now();
+    const none = (ttl) => ({ at, ttl, v: null });
+    const ask = (args) => exec("gh", args, { cwd, on, timeout: 20000 });
+    try {
+      if (!/^(main|master|trunk)$/.test(g.branch)) {
+        const r = await ask(["pr", "view", "--json", "number,title,state,isDraft,url,reviewDecision,statusCheckRollup"]);
+        if (r.code === 0) {
+          const p = JSON.parse(r.stdout);
+          const state = p.state === "OPEN" ? (p.isDraft ? "draft" : "open") : p.state === "MERGED" ? "merged" : "closed";
+          const checks = state === "open" || state === "draft" ? rollup(p.statusCheckRollup) : { state: null, says: "" };
+          const review = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", REVIEW_REQUIRED: "awaiting review" }[p.reviewDecision];
+          const tip = [`#${p.number} ${p.title}`, [state, review].filter(Boolean).join(", "), checks.says].filter(Boolean).join(" · ");
+          return { at, ttl: checks.state === "pending" ? PR_TTL.pending : PR_TTL.settled, v: { kind: "pr", number: p.number, state, checks: checks.state, url: p.url, tip } };
+        }
+        if (!/no pull requests found/i.test(r.stderr)) return none(PR_TTL.never);
+      }
+      const r = await ask(["run", "list", "--branch", g.branch, "--limit", "1", "--json", "status,conclusion,workflowName,displayTitle,url"]);
+      if (r.code !== 0) return none(PR_TTL.never);
+      const run = JSON.parse(r.stdout)[0];
+      if (!run) return none(PR_TTL.none);
+      const checks = run.status !== "completed" ? "pending" : /^(success|neutral|skipped)$/.test(run.conclusion) ? "pass" : "fail";
+      const tip = `${run.workflowName} on ${g.branch}: ${run.status !== "completed" ? "running" : run.conclusion} · ${run.displayTitle}`;
+      return { at, ttl: checks === "pending" ? PR_TTL.pending : PR_TTL.settled, v: { kind: "ci", checks, url: run.url, tip } };
+    } catch {
+      return none(PR_TTL.never);
+    }
+  }
+
+  // A branch's pull request ("#12" and its checks) or last CI run ("ci"), as a tag
+  // that opens its page. Passing is a check mark, failing a cross, running a shimmer.
+  github(v, id, t, G, ink) {
+    const swallow = (_e, cx) => cx.stop_propagation();
+    const sign = v.checks === "pass" ? div().flex_none().text_color(ink ?? t.done).child("√")
+      : v.checks === "fail" ? div().flex_none().text_color(ink ?? t.blocked).child("×")
+      : v.checks === "pending" ? div().flex_none().text_color(ink ?? t.working).frames(["░", "▒", "▓", "▒"], 280) : null;
+    const word = v.kind === "ci" ? "ci" : `#${v.number}`;
+    const state = v.kind === "pr" && v.state !== "open" ? v.state : "";
+    return h_flex().id(`gh-${id}`).flex_none().gap(G.u).items_center().cursor_pointer().text_color(ink ?? t.muted)
+      .hover((s) => s.text_color(ink ?? t.foreground))
+      .tooltip(`${v.tip} · click to open`)
+      .on_mouse_down("left", swallow).on_mouse_up("left", swallow)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.spawn(async () => { try { await exec("xdg-open", [v.url]); } catch { try { await exec("open", [v.url]); } catch {} } });
+      })
+      .child(div().flex_none().child(word))
+      .when(Boolean(state), (el) => el.child(div().flex_none().child(state)))
+      .when(Boolean(sign), (el) => el.child(sign));
   }
 
   watch(repo, cx) {
@@ -303,17 +429,17 @@ export default class Tree extends View {
   // Popups are as tall as their items; height is only the most.
   menu(w) {
     const G = grid();
-    openOverlay({ mod: "cmdr-tree", kind: "popup", width: 42 * G.u, height: 62 * G.u, props: { menu: "space", id: w.id } });
+    openOverlay({ mod: "cmdr-tree", kind: "popup", frame: "none", width: 43 * G.u, height: 63 * G.u, props: { menu: "space", id: w.id } });
   }
 
   projectMenu(p) {
     const G = grid();
-    openOverlay({ mod: "cmdr-tree", kind: "popup", width: 42 * G.u, height: 54 * G.u, props: { menu: "project", id: p.id } });
+    openOverlay({ mod: "cmdr-tree", kind: "popup", frame: "none", width: 43 * G.u, height: 55 * G.u, props: { menu: "project", id: p.id } });
   }
 
   machineMenu(m) {
     const G = grid();
-    openOverlay({ mod: "cmdr-tree", kind: "popup", width: 42 * G.u, height: 30 * G.u, props: { menu: "machine", machine: m } });
+    openOverlay({ mod: "cmdr-tree", kind: "popup", frame: "none", width: 43 * G.u, height: 31 * G.u, props: { menu: "machine", machine: m } });
   }
 
   // ---- agents ----
@@ -350,6 +476,7 @@ export default class Tree extends View {
       const s = a.status === "done" ? "idle" : a.status;
       const was = this.changed[a.address];
       if (was?.s === s) continue;
+      if (was) this.note(a, was, s, now);
       this.changed[a.address] = { s, at: was ? now : tabs.get(a.tab)?.changed_at ?? 0 };
       dirty = true;
     }
@@ -362,6 +489,20 @@ export default class Tree extends View {
 
   since(a) {
     return this.changed[a.address]?.at ?? 0;
+  }
+
+  // The activity log takes the changes that are news: an agent finished its turn, or
+  // stopped to ask. Starting isn't (the tree shows who is working).
+  note(a, was, s, now) {
+    let e = null;
+    if (s === "blocked") e = { k: "blocked" };
+    // Right after a start the change happened while the app was closed: how long it
+    // worked isn't known.
+    else if (was.s === "working" && s === "idle") e = { k: "done", took: was.at && now - this.started > 20000 ? now - was.at : 0 };
+    if (!e) return;
+    this.log.unshift({ ...e, at: now, addr: a.address, label: this.labelOf?.(a) || a.space_name, icon: a.program?.icon ?? null, tint: Boolean(a.program?.tint) });
+    this.log.length = Math.min(this.log.length, 60);
+    localStorage.setItem("activity", JSON.stringify(this.log));
   }
 
   // What each waiting agent is asking, read off its screen. Only while some wait.
@@ -566,6 +707,7 @@ export default class Tree extends View {
     const list = projects().list.filter((p) => (p.machine ?? null) === m);
     if (!list.length) return mine.flatMap((r) => draw(r));
     const inProject = filing(mine, list);
+    for (const [id, pid] of inProject) if (pid) this.filed[id] = pid;
     const out = [];
     for (const p of list) {
       const kids = mine.filter((r) => inProject.get(r.w.id) === p.id);
@@ -699,15 +841,17 @@ export default class Tree extends View {
 
   // Only what's unusual about its checkout: a branch that isn't main, commits ahead or
   // behind. Null when there's nothing to say.
-  gitTail(g, name, t, G, ink) {
+  gitTail(g, name, t, G, ink, id) {
     const raw = g.branch ?? "detached";
     const branch = raw.toLowerCase() === name.toLowerCase() || raw === "master" || raw === "main" ? "" : raw;
-    if (!branch && !g.ahead && !g.behind) return null;
+    const hub = g.branch ? this.pr[`${g.repo}|${g.branch}`]?.v ?? null : null;
+    if (!branch && !g.ahead && !g.behind && !hub) return null;
     // A git branch is always this cyan, here and on the pane's header.
     return h_flex().flex_none().gap(G.u).items_center().text_color(ink ?? t.ansi6)
       .when(Boolean(branch), (el) => el.child(div().max_w(14 * G.u).truncate().child(branch)))
       .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(ink ?? t.done).child(`↑${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(ink ?? t.blocked).child(`↓${g.behind}`)));
+      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(ink ?? t.blocked).child(`↓${g.behind}`)))
+      .when(Boolean(hub), (el) => el.child(this.github(hub, id, t, G, ink)));
   }
 
   // A space and, on the same row, its first agent. Returns the row and the rows under it.
@@ -727,7 +871,7 @@ export default class Tree extends View {
     const when = lead ? this.since(lead) : 0;
     const pad = (filed ? 4 : 2) * G.u;
     const hot = Boolean(lead) && this.hovered === w.id && this.pressed === null;
-    const tail = g ? this.gitTail(g, name, t, G, ink) : null;
+    const tail = g ? this.gitTail(g, name, t, G, ink, w.id) : null;
     const hue = this.hue(t, project);
     const pic = lead ? icon(lead.program, G, ink ?? t.foreground) : null;
     const head = v_flex()
@@ -845,6 +989,49 @@ export default class Tree extends View {
         .when(list.length > shown.length, (el) => el.child(div().px(2 * G.u).pb(G.u).text_color(t.muted).child(`+${list.length - shown.length} more`))));
   }
 
+  // What finished and what asked, newest first; six lines show, the rest scroll.
+  activity(t, G, list, now) {
+    const live = new Map(list.map((a) => [a.address, a]));
+    const act = (id, text, tip, action) => div().id(id).flex_none().px(G.u).h(2 * G.u).bg(t.canvas).text_color(t.muted).cursor_pointer()
+      .hover((s) => s.text_color(t.foreground)).tooltip(tip).on_click((_e, cx) => action(cx)).child(text);
+    const fold = (cx) => {
+      this.logFolded = !this.logFolded;
+      localStorage.setItem("activity.folded", this.logFolded ? "1" : "0");
+      cx.notify();
+    };
+    const right = h_flex().flex_none().gap(G.u)
+      .when(!this.logFolded && this.log.length > 0, (el) => el.child(act("activity-clear", "clear", "Forget these", (cx) => {
+        this.log = [];
+        localStorage.setItem("activity", "[]");
+        cx.notify();
+      })))
+      .child(act("activity-fold", this.logFolded ? "►" : "▼", this.logFolded ? "Show what happened" : "Fold away", fold));
+    const line = (e, i) => {
+      const a = live.get(e.addr);
+      const pic = icon({ icon: e.icon, tint: e.tint }, G, t.foreground);
+      const done = e.k === "done";
+      const tip = `${done ? `Finished${e.took ? ` after working ${duration(e.took)}` : ""}` : "Stopped to ask you"} · ${a ? "click to go to it" : "it has closed since"}`;
+      return h_flex().id(`event-${i}`).h(G.row).flex_none().px(2 * G.u).gap(G.u).items_center()
+        .when(Boolean(a), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => run("pane.focus", { pane: a.pane })))
+        .tooltip(tip)
+        .child(div().flex_none().text_color(t.muted).child(clock(e.at, now)))
+        .child(mark(t, G, done ? "done" : "blocked"))
+        .when(Boolean(pic), (el) => el.child(pic))
+        .child(div().flex_1().min_w(0).truncate().text_color(a ? t.foreground : t.muted).child(e.label))
+        .child(div().flex_none().text_color(t.muted).child(done ? (e.took ? duration(e.took) : "") : "asked"));
+    };
+    const title = tag(t, G, this.logFolded && this.log.length ? `Activity ${this.log.length}` : "Activity", t.canvas, t.foreground);
+    return frame(t, G, { title, right, fill: false }, this.logFolded ? div().h(G.u)
+      : v_flex().id("activity").w_full().max_h(6 * G.row + G.u).pt(G.u).overflow_y_scrollbar()
+        .children(this.log.map(line))
+        .when(!this.log.length, (el) => el.child(div().h(G.row).px(2 * G.u).flex().items_center().text_color(t.muted).child("Nothing has finished or asked yet."))));
+  }
+
+  // For the other Commander mods: each project's hue and where each space is filed.
+  publish(key, value) {
+    if (JSON.stringify(shared(key) ?? {}) !== JSON.stringify(value)) setShared(key, value);
+  }
+
   render() {
     const t = theme();
     if (props()?.menu) return this.renderMenu(t);
@@ -853,9 +1040,12 @@ export default class Tree extends View {
     this.known = adopt(sp, this.known);
     const list = agents();
     const now = Date.now();
-    this.track(list, sp, now);
     const ctx = this.context(list, now);
+    this.track(list, sp, now);
+    this.filed = {};
     const rows = this.grouped(t, G, ctx);
+    this.publish("commander.filing", this.filed);
+    this.publish("commander.hues", this.hues ?? {});
     setAgentOrder(ctx.order);
     const waiting = this.waiting(list);
     const fresh = div().id("space-new").flex_none().px(G.u).h(2 * G.u).bg(t.canvas).text_color(t.muted).cursor_pointer()
@@ -865,6 +1055,7 @@ export default class Tree extends View {
         v_flex().id("tree").size_full().min_h(0).pt(G.u).overflow_y_scrollbar().mode("always")
           .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
           .children(rows))))
+      .child(div().flex_none().child(this.activity(t, G, list, now)))
       .when(waiting.length > 0, (el) => el.child(div().flex_none().child(this.queue(t, G, waiting, ctx))));
   }
 
@@ -919,14 +1110,15 @@ export default class Tree extends View {
       .text_color(color ?? t.foreground).cursor_pointer().hover((s) => s.bg(t.accent).text_color(t.accent_foreground))
       .on_click((_e, cx) => action(cx))
       .child(div().flex_1().truncate().child(text))
-      .when(Boolean(on), (el) => el.child("■"));
+      .when(Boolean(on), (el) => el.child("[x]"));
     const head = (text) => div().px(2 * G.u).h(G.row).flex().items_center().flex_none().text_color(t.muted).child(text);
     const rule = () => div().h(G.px).my(G.u).flex_none().bg(t.border);
     const field = (hint) => v_flex().px(2 * G.u).pb(G.u).gap(G.u).flex_none()
       .child(Input.new(this.input).h(G.row).px(G.u).rounded(0).border(G.px).border_color(t.accent).bg(t.background).text_size(G.text).text_color(t.foreground))
       .child(div().text_color(t.muted).child(hint));
-    const box = (...rows) => v_flex().id("project-menu").track_focus(this.handle).w_full().py(G.u).bg(t.popover)
-      .text_size(G.text).line_height(`${G.text}px`).children(rows);
+    // Its own border and shadow (ui.js `lifted`): the overlay has no frame and is a cell bigger.
+    const box = (...rows) => lifted(G, v_flex().id("project-menu").track_focus(this.handle).w_full().py(G.u).bg(t.popover).border(G.px).border_color(t.input)
+      .text_size(G.text).line_height(`${G.text}px`).children(rows));
 
     if (p.menu === "space") {
       const w = spaces().find((s) => s.id === p.id);

@@ -17,27 +17,33 @@ import json, os, sys, time
 from datetime import datetime, timedelta
 
 DAYS = 7
-VERSION = 3
+VERSION = 4
 
-# $ per million tokens: input, output, 5-minute cache write, 1-hour cache write, cache
-# read. The longest matching prefix of the logged model wins (Mythos prices as Fable).
+# $ per million tokens: input, output, short cache write, long cache write, cache
+# read. Claude lifetimes are 5m/1h; OpenAI lifetimes are 30m/12h. The longest matching prefix of the logged model wins (Mythos prices as Fable).
 # Claude: Anthropic's list prices (Nov 2026). OpenAI: its published prices, as reported
-# Nov 2026 (no cache writes are billed; cache_write_input_tokens price as input).
+# Nov 2026. Codex logs no write TTL, so estimates assume the default 30m lifetime.
+# Sources: https://platform.claude.com/docs/en/about-claude/pricing
+# https://developers.openai.com/api/docs/pricing
 PRICES = {
     "claude-fable-5-2": (8, 40, 10, 16, 0.20),
     "claude-fable-5-1": (10, 50, 12.5, 20, 0.25),
     "claude-fable-5": (10, 50, 12.5, 20, 1.00),
     "claude-opus-5-5": (4, 20, 5, 8, 0.20),
     "claude-opus-5": (5, 25, 6.25, 10, 0.50),
-    "claude-opus-4": (5, 25, 6.25, 10, 0.50),
+    "claude-opus-4-8": (5, 25, 6.25, 10, 0.50),
+    "claude-opus-4-7": (5, 25, 6.25, 10, 0.50),
+    "claude-opus-4-6": (5, 25, 6.25, 10, 0.50),
+    "claude-opus-4-5": (5, 25, 6.25, 10, 0.50),
+    "claude-opus-4": (15, 75, 18.75, 30, 1.50),
     "claude-sonnet-5-5": (2, 10, 2.5, 4, 0.10),
     "claude-sonnet-5": (2, 10, 2.5, 4, 0.20),
     "claude-sonnet-4": (3, 15, 3.75, 6, 0.30),
     "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
     "claude-haiku-4": (1, 5, 1.25, 2, 0.10),
-    "gpt-6-astra": (10, 50, 10, 10, 1.00),
-    "gpt-6.1-sol": (2, 10, 2, 2, 0.10),
-    "gpt-6.1-terra": (1, 5, 1, 1, 0.05),
+    "gpt-6-astra": (10, 50, 12.5, 25, 1.00),
+    "gpt-6.1-sol": (2, 10, 2.5, 5, 0.10),
+    "gpt-6.1-terra": (1, 5, 1.25, 2.5, 0.05),
 }
 
 
@@ -256,7 +262,7 @@ if limit:
                        "resets": p.get("resets_at"), "plan": (limit[1] or {}).get("plan_type")}
 
 json.dump({"at": int(time.time() * 1000), "days": days, "daily": daily,
-           "places": sorted(([k, v[0], v[1], round(v[2], 4), round(v[3], 4)] for k, v in places.items()), key=lambda r: -r[2])[:60],
+           "places": sorted(([k, v[0], v[1], round(v[2], 4), round(v[3], 4)] for k, v in places.items()), key=lambda r: -r[2]),
            "tools": tools, "cached": cached, "output": output, "codex_limit": codex_limit,
            "cost": spent, "daily_cost": [round(v, 4) for v in daily_cost], "unpriced": unpriced,
            "models": models},
