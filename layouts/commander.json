@@ -36,25 +36,33 @@
               "type": "row",
               "children": [
                 {
-                  "id": "main",
-                  "type": "block",
-                  "content": {
-                    "tab": "active",
-                    "pane": {
-                      "header": {
-                        "content": { "mod": "cmdr-pane" },
-                        "reveal": "always",
-                        "height": 20.83,
-                        "position": "top"
-                      },
-                      "background": "background",
-                      "border": { "width": 1, "color": "border" },
-                      "focus": { "width": 1, "color": "accent" },
-                      "radius": 0,
-                      "gap": 5.56,
-                      "lone": true
+                  "id": "globe",
+                  "type": "column",
+                  "resizable": false,
+                  "background": { "image": "backgrounds/commander-earth/479.png", "fit": "contain" },
+                  "children": [
+                    {
+                      "id": "main",
+                      "type": "block",
+                      "background": { "image": "backgrounds/commander-earth/000.png", "fit": "contain" },
+                      "content": {
+                        "tab": "active",
+                        "pane": {
+                          "header": {
+                            "content": { "mod": "cmdr-pane" },
+                            "reveal": "always",
+                            "height": 20.83,
+                            "position": "top"
+                          },
+                          "border": { "width": 1, "color": "border" },
+                          "focus": { "width": 1, "color": "accent" },
+                          "radius": 0,
+                          "gap": 5.56,
+                          "lone": true
+                        }
+                      }
                     }
-                  }
+                  ]
                 },
                 {
                   "id": "panel",
@@ -98,6 +106,7 @@
   "resizable": false,
   "background": "canvas",
   "terminal_padding": [8, 6],
+  "terminal_opacity": 0.5,
   "titlebar": "none",
   "traffic_lights": [12, 16],
   "theme": { "light": "commander-navy", "dark": "commander" },

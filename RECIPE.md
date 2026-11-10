@@ -1,6 +1,6 @@
 # Commander
 
-A Herdr layout that looks and works like an old PC text-mode workbench: a menu bar on top, a framed tree of your spaces and agents on the left, framed terminals in the middle, and a bar of your real shortcuts at the bottom. Everything is set in one 8x16 pixel font, kept on the font's own pixel grid so it stays sharp. Colors are calm and low in saturation; each agent state has its own shape as well as its own color, and whatever needs you is collected in one box with the keys to answer it.
+A Herdr layout that looks and works like an old PC text-mode workbench: a menu bar on top, a framed tree of your spaces and agents on the left, framed terminals in the middle, and a bar of your real shortcuts at the bottom. Everything is set in one 8x16 pixel font, kept on the font's own pixel grid so it stays sharp. Colors are calm and low in saturation; each agent state has its own shape as well as its own color, and whatever needs you is collected in one box with the keys to answer it. Behind the terminals a pixel-art Earth, drawn from real coastlines, turns once a minute.
 
 ![Commander](preview.png)
 
@@ -18,6 +18,7 @@ Top to bottom, on a near-black canvas (`#121417`), in PxPlus IBM VGA 8x16 throug
 - **Waiting on you**, a second frame at the bottom of the sidebar, present only while an agent is blocked or done. Its frame and title are red (`#d77a6e`) if anything is blocked, green (`#8fb58a`) if agents are only done. Up to 3 entries: mark, icon, space name, time; then the question read from the agent's screen, or the tab name; then buttons.
 - **Tab strip**, one row: a cell per tab of the shown space (`number`, program icon, name, `+N` for extra panes, status mark, `×` on the active one), a `+`, and on the right the side-panel buttons (`Notes`, and `Files` / `Changes` when the person enabled them).
 - **Panes**, each in a 1 px frame (`#30353b`; the accent color while it has the keyboard), square corners, 5.56 px apart. Each has a header row: a tag with the pane's number, program icon and name (inverse while focused), the folder with `~` for home, the branch in cyan, and the agent's state in words (`working`, `needs you`, `done`).
+- **Globe**, behind the panes and centred in the terminal area, as large as the area's shorter side allows: the Earth as pixel art, 112 globe pixels across, seen from the side with its axis leaning 23.4° to the right. Land, lakes, glaciers and the Antarctic ice shelves are where they really are (Natural Earth 1:50m outlines). Six muted colors: ocean `#2b425c`, land `#5d7a5a`, ice `#b4bfc9`, and a darker one of each (`#1f2e44`, `#3f5644`, `#768493`) on the side away from the light, which comes from the upper left; the edge of the shadow is a checkerboard dither. Terminals are half see-through (`terminal_opacity` 0.5) and panes have no fill of their own, so the globe shows through the text.
 - **Side panel** (hidden until asked for), 368 px: a stack of the shipped `files` and `changes` mods and `cmdr-notes` (a markdown note per tab).
 - **Key bar**, one row: the prefix most shortcuts share (`Ctrl+Shift+`) once on the left, then a cell per command: the last key in accent, the label on a raised cell. New tab, Split →, Split ↓, Zoom, Close pane, Reply, Go to, Commands, Sidebar, Layout.
 
@@ -36,11 +37,13 @@ Tree: click a space to show it; right-click for its menu (move to a project, new
 
 Waiting box: a blocked entry has `1 Yes`, `2`, `3` and `Esc`, which press that key in the agent's terminal; every entry has `Reply` (a dialog showing the agent's last lines and a text field, sent to the agent) and `Open` (go to its pane).
 
-Menus: click a label to open it under the bar. Each item shows the key it is bound to, read live from `keys.json`. Esc closes it. View holds Sidebar, Notes, text size (`Bigger text`, `Smaller text`, `Sharpest text`), `Screen scale`, and the app's zoom.
+Menus: click a label to open it under the bar. Each item shows the key it is bound to, read live from `keys.json`. Esc closes it. View holds Sidebar, Notes, text size (`Bigger text`, `Smaller text`, `Sharpest text`), `Screen scale`, `Globe`, and the app's zoom.
 
 Tabs: click to show, double-click to rename, drag to reorder, right-click for the tab menu, wheel for next and previous. `+` opens the shipped new-tab menu. The side panel's open view is remembered per space.
 
 Pane header: click to focus; hovering shows `→` (split right), `↓` (split down), `Z` (zoom) and `×` (close).
+
+Globe: it turns west to east, 0.75° a step, eight steps a second, one revolution a minute; the light stays put and the planet turns under it. `View > Globe` goes from `revolving` to `still` (the picture stays where it stopped) to `off` (no picture, panes filled with the theme background, terminals opaque) and back; the menu stays open so the next click moves on. Turning it on again starts from the first picture.
 
 Key bar: click a cell to run it. A command with no key bound is not shown.
 
@@ -48,7 +51,7 @@ Keys added for this layout: `Ctrl+Shift+R` replies to the first waiting agent, `
 
 ## Built from
 
-`layouts/commander.json`: a root `column`, `titlebar: "none"`, not resizable, background `canvas`, `font` and `ui_font` "PxPlus IBM VGA 8x16", `font_size` 14, `terminal_padding` [8, 6], `theme: { light: "commander-navy", dark: "commander" }`.
+`layouts/commander.json`: a root `column`, `titlebar: "none"`, not resizable, background `canvas`, `font` and `ui_font` "PxPlus IBM VGA 8x16", `font_size` 14, `terminal_padding` [8, 6], `terminal_opacity` 0.5, `theme: { light: "commander-navy", dark: "commander" }`.
 
 ```
 root (column)
@@ -58,8 +61,10 @@ root (column)
 │  └─ work     column gap 5.56
 │     ├─ tabs       block  cmdr-tabs   22.22 px
 │     └─ work-body  row
-│        ├─ main    block  { tab: "active", pane: { header: cmdr-pane (top, always, 20.83 px),
-│        │                   border 1 px "border", focus 1 px "accent", radius 0, gap 5.56, lone: true } }
+│        ├─ globe   column, not resizable, background { image: "backgrounds/commander-earth/479.png", fit: "contain" }
+│        │  └─ main  block  background { image: "backgrounds/commander-earth/000.png", fit: "contain" },
+│        │                  { tab: "active", pane: { header: cmdr-pane (top, always, 20.83 px),
+│        │                    border 1 px "border", focus 1 px "accent", radius 0, gap 5.56, lone: true } }
 │        └─ panel   column, hidden, 368 px → panel-body (stack: files, changes, notes = cmdr-notes)
 └─ keybar    block  cmdr-keys      22.22 px
 ```
@@ -67,7 +72,7 @@ root (column)
 Mods, none with `props` of their own unless said:
 
 - `cmdr-tree`: the sidebar. `projects.js` keeps projects in shared `spaces.projects` (`{ list: [{ id, name, machine, folder }], of: { spaceId: projectId } }`). With `props().menu` (`space`, `project`, `machine`) the same mod draws that popup menu. Commands: `cmdr-tree.reply`, `cmdr-tree.project`. Carries the font in `fonts/`.
-- `cmdr-menubar`: the bar; with `props().menu` (a menu id) it draws that menu as a popup with `frame: "none"`. Commands: `cmdr-menubar.<herdr|space|tab|pane|agent|view|help>` open a menu; `.bigger`, `.smaller`, `.sharp`, `.scale`, `.rescale` change text size and screen scale.
+- `cmdr-menubar`: the bar; with `props().menu` (a menu id) it draws that menu as a popup with `frame: "none"`. Commands: `cmdr-menubar.<herdr|space|tab|pane|agent|view|help>` open a menu; `.bigger`, `.smaller`, `.sharp`, `.scale`, `.rescale` change text size and screen scale; `.globe` moves the globe to its next setting. It also turns the globe: a 125 ms timer that, while shared `commander.globe` is `on` (the default; `still`, `off`) and `main` has a globe picture, copies `layout()`, sets `main.background.image` to the next of the 480 pictures and the `globe` node's to the one before it, and runs `layout.set`.
 - `cmdr-tabs`, `cmdr-pane` (gets `{ pane, terminal }` from the app), `cmdr-keys`.
 - `cmdr-reply` (`props: { terminal, label? }`, a dialog) and `cmdr-notes` (the notes panel).
 - `ui.js`, the same file in five of the mods: `grid()`, `mark()`, `frame()`, `tag()`, `icon()`, `palette()`, `mix()`, `chord()`.
@@ -76,18 +81,21 @@ Shipped mods it opens: `menu`, `new-menu`, `picker`, `worktree`, `files`, `chang
 
 `herdr` functions: `spaces`, `machines`, `panes`, `agents`, `terminals`, `focused`, `layout`, `theme`, `settings`, `keys`, `shared` / `setShared`, `props`, `nextCommand`, `openOverlay` / `closeOverlay`, `setAgentOrder`, `run`, `exec`, `hc`, `watchFolder`, `readTextFile` / `writeTextFile`, `window`, `home`, `appHome`.
 
-Commands it runs: `space.select`, `space.new`, `space.rename`, `space.close`, `space.move`, `space.next`, `space.prev`, `tab.new`, `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.next`, `tab.prev`, `pane.focus`, `pane.go`, `pane.split`, `pane.zoom`, `pane.close`, `terminal.peek`, `agent.next`, `agent.prev`, `layout.resize`, `layout.toggle`, `layout.show`, `layout.hide`, `layout.select`, `layout.switch`, `mod.open`, `app.palette`, `app.help`, `app.settings`, `app.check_updates`, `app.whats_new`, `app.feedback`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`, `window.minimize`, `window.maximize`, `window.close`.
+Commands it runs: `space.select`, `space.new`, `space.rename`, `space.close`, `space.move`, `space.next`, `space.prev`, `tab.new`, `tab.select`, `tab.rename`, `tab.move`, `tab.close`, `tab.next`, `tab.prev`, `pane.focus`, `pane.go`, `pane.split`, `pane.zoom`, `pane.close`, `terminal.peek`, `agent.next`, `agent.prev`, `layout.resize`, `layout.set`, `layout.toggle`, `layout.show`, `layout.hide`, `layout.select`, `layout.switch`, `mod.open`, `app.palette`, `app.help`, `app.settings`, `app.check_updates`, `app.whats_new`, `app.feedback`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`, `window.minimize`, `window.maximize`, `window.close`.
 
 Programs it runs and files it touches (tell the person before installing):
 
 - `git` in each space's folder (branch, ahead/behind, changes, worktrees), on the space's own machine.
 - `hc read` on waiting agents every 4 seconds (to find the question), `hc keys` and `hc send` when you answer, `hc machine ls`; `Log in ►` opens a tab running `hc machine login <machine>`.
 - `hyprctl monitors -j` to learn the screen scale; where that isn't there, `herdr-app shot` to a temporary file and `od` on its header.
+- While the globe revolves, `layout.set` makes the app rewrite `layouts/commander.json` and its saved clicks eight times a second.
 - `cmdr-notes` reads and writes `~/.config/herdr-app/notes/<tab>.md`.
 - `cmdr-tree` looks for `mods/retro-crew/main.js`, a crew launcher that is not part of this layout: only where that mod exists do a `Start a crew…` menu item and a `Crew` key cell (`cmdr-tree.crew`) show.
 - No network access.
 
 Art: the font is PxPlus IBM VGA 8x16 from The Ultimate Oldschool PC Font Pack by VileR (int10h.org), under CC BY-SA 4.0; its license is in `mods/cmdr-tree/fonts/`. Program icons are the app's own.
+
+The globe is `backgrounds/commander-earth/000.png` to `479.png`: 312 × 312 px, transparent outside a 224 px disc (each globe pixel is 2 × 2), one picture per 0.75° of turn. `render.py` beside them made them (Python with numpy and Pillow): it paints Natural Earth's 1:50m land, lakes, glaciated areas and Antarctic ice shelves (public domain, naturalearthdata.com; GeoJSON from github.com/nvkelso/natural-earth-vector) onto an 8192 × 4096 map, then for each picture looks up every globe pixel through an orthographic projection, 5 × 5 samples a pixel, majority wins. The pictures as shipped: `render.py <folder with the four .geojson files> <out folder> 112 480 2 0.72`.
 
 ## Watch out
 
@@ -103,6 +111,13 @@ Art: the font is PxPlus IBM VGA 8x16 from The Ultimate Oldschool PC Font Pack by
 - Menu labels have no Alt-letter hotkeys. Inside an open menu, Up, Down and Enter are handled in code but this build was only exercised with the mouse and by command.
 - The answer buttons press keys blindly: they suit agents whose prompts take `1`, `2`, `3` and Esc.
 - Animate the working mark with `.frames(...)`, never a timer.
+- **The app does not animate a layout background.** An animated GIF or WebP shows its first frame, and a picture is cached by its path, so overwriting the file changes nothing. The globe turns by naming a different file each step, through `layout.set`.
+- **A picture shown for the first time leaves its block bare for a moment**, which reads as flicker on the first revolution. That is what the `globe` wrapper is for: it shows the previous picture, already loaded, in the same place under `main`. `main` must be its only child, with no gap or padding, or the two globes won't line up.
+- **The globe has a running cost.** Measured on one Linux laptop while revolving: about 2% of one processor core, about 68 kB a second written to disk (the layout file, each step), and about 190 MB of memory for the 480 loaded pictures. `still` stops the first two. At one step a second the motion ticks visibly; that is why it is eight.
+- The layout file is rewritten eight times a second while the globe revolves: set it to `still` before editing `layouts/commander.json` by hand, or your edit is overwritten.
+- Copy `backgrounds/commander-earth/` along with the layout and mods. Without the folder there is no globe, only half see-through terminals; `View > Globe`, clicked through to `off`, puts the pane fill back.
+- The pictures are scaled to the terminal area (`fit: "contain"`), so unlike the text, the globe's pixels do not sit on the screen's pixel grid.
+- A new set of pictures needs a new folder name while the app runs (the cache again); then change `GLOBE.dir` and `GLOBE.frames` in `cmdr-menubar/main.js` and the two paths in the layout.
 
 ## Done when
 
@@ -113,3 +128,5 @@ Art: the font is PxPlus IBM VGA 8x16 from The Ultimate Oldschool PC Font Pack by
 - `herdr-app do cmdr-menubar.view` opens the View menu directly under its label, flush with the bar.
 - Each key bar cell names a key that is bound in `keys.json`, and unbinding one removes its cell.
 - Two projects on one machine show two different hues, and their sessions carry them.
+- With the globe revolving, the number in `main`'s `background.image` in `layouts/commander.json` goes up by about eight a second and follows `479` with `000`, and screenshots taken in quick succession all show a globe.
+- `herdr-app do cmdr-menubar.globe` once stops that number; again removes `background` from `main` and `globe`, gives `pane` the fill `background` and sets `terminal_opacity` to 1; a third time puts picture `000` back and it turns again.

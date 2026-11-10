@@ -42,6 +42,42 @@ function nextScale() {
   setShared("commander.scale", SCALES[(SCALES.indexOf(now) + 1) % SCALES.length]);
 }
 
+// The globe behind the terminals: 480 pictures of the Earth, 0.75 degrees apart, in
+// backgrounds/commander-earth/, the tab block's background. The app shows a still
+// picture there, so turning the planet is changing which one, eight times a second.
+// A picture shown for the first time takes a moment to load, and the block is bare
+// meanwhile (a flicker): so the block sits in a wrapper ("globe") that shows the
+// picture before it, already loaded, in the same place.
+const GLOBE = { dir: "backgrounds/commander-earth", frames: 480, every: 125, opacity: 0.5 };
+const MODES = ["on", "still", "off"];
+const SAYS = { on: "revolving", still: "still", off: "off" };
+const globeMode = () => (MODES.includes(shared("commander.globe")) ? shared("commander.globe") : "on");
+const framePath = (i) => `${GLOBE.dir}/${String(i).padStart(3, "0")}.png`;
+
+// Puts the globe's frame `i` in the layout, or takes the globe out (i null).
+function setGlobe(i) {
+  const root = JSON.parse(JSON.stringify(layout()));
+  const main = find(root, "main");
+  const pane = main?.content?.pane;
+  if (!main || !pane) return;
+  const under = find(root, "globe");
+  if (i === null) {
+    delete main.background; pane.background = "background"; root.terminal_opacity = 1;
+    if (under) delete under.background;
+  } else {
+    main.background = { image: framePath(i), fit: "contain" }; delete pane.background; root.terminal_opacity = GLOBE.opacity;
+    if (under) under.background = { image: framePath((i + GLOBE.frames - 1) % GLOBE.frames), fit: "contain" };
+  }
+  run("layout.set", { layout: root });
+}
+const globeFrame = () => { const m = /(\d{3})\.png$/.exec(find(layout(), "main")?.background?.image ?? ""); return m ? Number(m[1]) : null; };
+function nextGlobeMode() {
+  const mode = MODES[(MODES.indexOf(globeMode()) + 1) % MODES.length];
+  setShared("commander.globe", mode);
+  if (mode === "off") setGlobe(null);
+  else if (globeFrame() === null) setGlobe(0);
+}
+
 const SEP = { sep: true };
 const cmd = (label, name, args, key) => ({ label, key: key ?? name, act: () => run(name, args ?? {}) });
 
@@ -113,6 +149,7 @@ function menus() {
       { label: "Smaller text", stay: true, act: () => setShared("commander.bump", Math.max(0, bump() - 2)) },
       { label: "Sharpest text", act: () => setShared("commander.bump", 0) },
       { label: `Screen scale: ${Number(shared("commander.scale")) || 1.6}`, stay: true, act: nextScale },
+      { label: `Globe: ${SAYS[globeMode()]}`, stay: true, act: nextGlobeMode },
       SEP,
       cmd("Zoom in", "app.zoom_in"),
       cmd("Zoom out", "app.zoom_out"),
@@ -131,6 +168,11 @@ const labelWidth = (m, G) => ([...m.label].length + 4) * G.u;
 export default class Menubar extends View {
   init(_props, cx) {
     if (props()?.menu) return this.menuInit(cx);
+    // The planet's turn, a step at a time, while it's set to revolve.
+    cx.timer.every(GLOBE.every, () => {
+      const at = globeFrame();
+      if (globeMode() === "on" && at !== null) setGlobe((at + 1) % GLOBE.frames);
+    });
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -140,6 +182,7 @@ export default class Menubar extends View {
         if (c === "smaller") setShared("commander.bump", Math.max(0, bump() - 2));
         if (c === "sharp") setShared("commander.bump", 0);
         if (c === "scale") nextScale();
+        if (c === "globe") nextGlobeMode();
         if (c === "rescale") { setShared("commander.scale.manual", false); await this.detect(); }
       }
     });

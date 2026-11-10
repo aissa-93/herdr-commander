@@ -733,6 +733,7 @@ export default class Tree extends View {
     const head = v_flex()
       .relative()
       .id(`space-${w.id}`)
+      .w_full().min_w(0).overflow_hidden()
       .pl(pad)
       .pr(2 * G.u)
       .h(G.row)
@@ -784,12 +785,14 @@ export default class Tree extends View {
       .on_mouse_down("right", () => this.menu(w))
       .child(
         h_flex()
+          .w_full().min_w(0)
           .gap(G.u)
           .items_center()
           .when(Boolean(tree), (el) => el.child(this.slot(t, G, tree, on ? null : hue)))
           .child(mark(t, G, lead?.status ?? null, ink, hue))
           .when(Boolean(pic), (el) => el.child(pic))
-          .child(div().flex_shrink(0).max_w(24 * G.u).truncate().child(name))
+          // With a long branch beside it, the name gives way before the row spills over.
+          .child(div().flex_shrink(1).min_w(8 * G.u).max_w(24 * G.u).truncate().child(name))
           .child(div().flex_1().min_w(0).truncate().text_color(soft).child(more))
           .when(Boolean(tail), (el) => el.child(tail))
           .when(hot, (el) => el.child(div().id(`space-reply-${w.id}`).flex_none().px(G.u).h(3 * G.u).flex().items_center()
