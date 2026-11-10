@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Move panes between tabs in the Herdr app, keeping their terminals running.
 
-  herdr-move.py tab  <pane>                       the pane's terminal into a new tab, right after its own
+  herdr-move.py tab  <pane> [sibling pane]        the pane's terminal into a new tab, right after its own
   herdr-move.py join <tab> <pane> [right|down]    every terminal of <tab> beside <pane> (another tab):
                                                   the first one right (or below) of it, the rest stacked
                                                   below that one; the emptied tab closes
@@ -96,18 +96,28 @@ def keep(terminal, place, beside):
     return made
 
 
-def to_tab(pane):
+def to_tab(pane, beside=None):
     s, t, x = find_pane(pane)
     if not x:
         raise SystemExit(f"no terminal pane {pane}")
     others = [y["pane"] for y in t["terminals"] if y.get("pane") and y["pane"] != pane]
-    if not others:
+    if not others and not beside:
         raise SystemExit("it is the tab's only pane already")
+    beside = beside or others[0]
+    if beside == pane:
+        raise SystemExit("the sibling must be another pane")
+    # The app's pane list includes mod panes; `herdr-app ls` lists terminals
+    # only. Focus the supplied sibling before parking, and verify its tab so
+    # a stale or unrelated target cannot move a terminal into another space.
+    do("pane.focus", pane=beside)
+    if not any(w.get("active") and c.get("active") and c["id"] == t["id"]
+               for w in world() for c in w["tabs"]):
+        raise SystemExit("the sibling is no longer in the source tab")
     terminal = x["terminal"]
     index = next(i for i, c in enumerate(s["tabs"]) if c["id"] == t["id"]) + 2
     do("terminal.park", terminal=terminal)
     wait(f"{terminal} to leave its pane", parked(terminal))
-    made = keep(terminal, "tab", others[0])
+    made = keep(terminal, "tab", beside)
     new = made.get("tab")
     if new:
         # keep names the tab after the address; unnamed, a tab shows what runs in it.
@@ -147,7 +157,7 @@ def join(tab, pane, direction="right"):
 
 def main(argv):
     if len(argv) >= 2 and argv[0] == "tab":
-        return to_tab(argv[1])
+        return to_tab(argv[1], argv[2] if len(argv) > 2 else None)
     if len(argv) >= 3 and argv[0] == "join":
         direction = argv[3] if len(argv) > 3 else "right"
         if direction not in ("right", "down"):

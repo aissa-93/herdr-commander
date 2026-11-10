@@ -298,7 +298,11 @@ export default class Menubar extends View {
     cx.spawn(async () => {
       while (this.moves.length) {
         const m = this.moves.shift();
-        const args = m.op === "tab" ? ["tab", m.pane] : ["join", m.tab, m.pane, m.direction ?? "right"];
+        // ls omits mod panes. Supply the sibling from the app's complete pane
+        // list so a terminal beside a mod can leave its tab too.
+        const source = panes().find((p) => p.pane === m.pane);
+        const beside = source && tabPanes(source.tab).find((p) => p.pane !== m.pane)?.pane;
+        const args = m.op === "tab" ? ["tab", m.pane, ...(beside ? [beside] : [])] : ["join", m.tab, m.pane, m.direction ?? "right"];
         try {
           const r = await exec("python3", [`${appHome()}/mods/cmdr-tabs/herdr-move.py`, ...args], { timeout: 60000 });
           if (r.code !== 0) notify({ title: "Couldn't move the pane", body: (r.stderr || r.stdout).trim().split("\n").at(-1), level: "error" });

@@ -27,7 +27,7 @@ say which with --space.
 
 <line> is its number in the list, or a part of its text that only it has.
 Options: --space <id>, --name <space name>, --json (print the list as JSON),
---exact (a line is named by its whole text), --agent <terminal> --tab <tab> (who starts it).
+--exact (a line is named by its whole text), --id (by its stable identity), --agent <terminal> --tab <tab> (who starts it).
 """
 import fcntl
 import hashlib
@@ -37,10 +37,11 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 
 ROOT = os.path.expanduser("~/.herdr/todos")
 STATE = os.path.expanduser("~/.herdr/todos-state")  # the lock, and what each terminal has seen
-ITEM = re.compile(r"^\s*[-*] \[( |x|X|/)\] (.*?)(?: <!-- agent:(\S+) tab:(\S+) -->)?\s*$")
+ITEM = re.compile(r"^\s*[-*] \[( |x|X|/)\] (.*?)(?: <!-- agent:(\S+) tab:(\S+) -->)?(?: <!-- id:([A-Za-z0-9_-]+) -->)?\s*$")
 BOX = {"open": " ", "started": "/", "done": "x"}
 
 
@@ -105,7 +106,7 @@ def parse(text):
             out.append({"raw": line})
             continue
         state = "open" if m.group(1) == " " else "started" if m.group(1) == "/" else "done"
-        out.append({"state": state, "text": m.group(2), "agent": m.group(3), "tab": m.group(4)})
+        out.append({"state": state, "text": m.group(2), "agent": m.group(3), "tab": m.group(4), "id": m.group(5) or uuid.uuid4().hex})
     return out
 
 
@@ -116,7 +117,7 @@ def render(entries):
             lines.append(e["raw"])
             continue
         who = " <!-- agent:%s tab:%s -->" % (e["agent"], e.get("tab") or "-") if e["state"] == "started" and e.get("agent") else ""
-        lines.append("- [%s] %s%s" % (BOX[e["state"]], e["text"], who))
+        lines.append("- [%s] %s%s <!-- id:%s -->" % (BOX[e["state"]], e["text"], who, e["id"]))
     return "\n".join(lines)
 
 
@@ -124,19 +125,26 @@ def items(entries):
     return [e for e in entries if "raw" not in e]
 
 
-def pick(entries, sel, exact):
+def pick(entries, sel, exact, by_id=False):
     """The line a selector names, or an error saying why not."""
     its = items(entries)
+    if by_id:
+        found = [e for e in its if e["id"] == sel]
+        return (found[0], None) if len(found) == 1 else (None, "that to-do changed or was removed; refresh the list")
     if exact:
         found = [e for e in its if e["text"] == sel]
+        if len(found) > 1:
+            return None, '"%s" matches %d lines; use its number' % (sel, len(found))
         return (found[0], None) if found else (None, "no line reads exactly: %s" % sel)
     if sel.isdigit():
         n = int(sel)
         return (its[n - 1], None) if 1 <= n <= len(its) else (None, "there is no line %d" % n)
     low = sel.lower().strip()
     same = [e for e in its if e["text"].lower() == low]
-    if same:
+    if len(same) == 1:
         return same[0], None
+    if len(same) > 1:
+        return None, '"%s" matches %d lines; use its number' % (sel, len(same))
     found = [e for e in its if low in e["text"].lower()]
     live = [e for e in found if e["state"] != "done"]
     if len(live) == 1:
@@ -267,7 +275,7 @@ BRIEF = """You are running inside Herdr, in the space{name}. This space has a to
 
 def main():
     args = sys.argv[1:]
-    opt = {"json": False, "exact": False, "start": False, "all": False}
+    opt = {"json": False, "exact": False, "start": False, "all": False, "id": False}
     val = {"space": None, "name": None, "agent": None, "tab": None, "on": None}
     rest = []
     i = 0
@@ -336,7 +344,7 @@ def main():
             # All of them are found before any is changed: numbers mean the list as shown.
             found = []
             for sel in params:
-                e, err = pick(entries, sel, opt["exact"])
+                e, err = pick(entries, sel, opt["exact"], opt["id"])
                 if err:
                     error = err
                     return
@@ -359,7 +367,7 @@ def main():
                     e = same[0]
                     said.append("already on the list: %s" % text)
                 else:
-                    e = {"state": "open", "text": text, "agent": None, "tab": None}
+                    e = {"state": "open", "text": text, "agent": None, "tab": None, "id": uuid.uuid4().hex}
                     # After the last to-do; in a file with none yet, before its final newline.
                     last = max((n for n, x in enumerate(entries) if "raw" not in x), default=None)
                     if last is not None:
@@ -375,7 +383,7 @@ def main():
         elif cmd == "start":
             def start(e):
                 nonlocal error
-                if e["state"] == "started" and e.get("agent") and me and e["agent"] != me and not opt["exact"]:
+                if e["state"] == "started" and e.get("agent") and me and e["agent"] != me and not (opt["exact"] or opt["id"]):
                     live = alive()
                     if live is None or e["agent"] in live:
                         error = "agent %s is already working on: %s" % (e["agent"], e["text"])
@@ -393,7 +401,7 @@ def main():
             if len(params) != 2 or not " ".join(params[1].split()):
                 error = 'edit takes a line and its new text: herdr-todo edit 2 "New wording"'
             else:
-                e, error = pick(entries, params[0], opt["exact"])
+                e, error = pick(entries, params[0], opt["exact"], opt["id"])
                 if e:
                     e["text"] = " ".join(params[1].split())
                     said.append("now reads: %s" % e["text"])

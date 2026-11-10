@@ -48,7 +48,7 @@ export default class Todo extends View {
     this.space = null; // the space whose list is in `items`
     this.items = [];
     this.hovered = null;
-    this.editing = null; // the text of the line the field is changing
+    this.editing = null; // { id, text } for the line the field is changing
     this.text = "";
     this.input = InputState.new({ placeholder: "Add a to-do, then Enter" });
     this.input.on("change", (_e, cx) => { this.text = this.input.value(); cx.notify(); });
@@ -154,11 +154,11 @@ export default class Todo extends View {
     this.text = "";
     this.input.set_value("");
     if (!text) return cx.notify();
-    this.act(cx, editing ? ["edit", "--exact", editing, text] : ["add", text]);
+    this.act(cx, editing ? ["edit", "--id", editing.id, text] : ["add", text]);
   }
 
   edit(e, cx) {
-    this.editing = e.text;
+    this.editing = { id: e.id, text: e.text };
     this.text = e.text;
     this.input.set_value(e.text);
     this.input.focus();
@@ -191,7 +191,7 @@ export default class Todo extends View {
       const left = started && Boolean(e.agent) && running.size > 0 && !running.has(e.agent);
       const isDone = e.state === "done";
       return h_flex().id(`todo-${i}`).w_full().min_h(G.row).flex_none().pl(2 * G.u).pr(G.u).py(G.u / 2).gap(G.u).items_start()
-        .when(this.editing === e.text, (el) => el.bg(t.raised))
+        .when(this.editing?.id === e.id, (el) => el.bg(t.raised))
         .hover((s) => s.bg(t.hover))
         .on_hover((over, cx) => {
           if (over) this.hovered = i;
@@ -203,7 +203,7 @@ export default class Todo extends View {
           .tooltip(isDone ? "Done. Click to open it again."
             : left ? `Agent ${e.agent} was on it and is gone. Click if it's done, or hand it over again with ►.`
             : started ? `${e.agent ? `Agent ${e.agent} is` : "Someone is"} working on it. Click when it's done.` : "Click when it's done")
-          .on_click((_e, cx) => this.act(cx, [isDone ? "reopen" : "done", "--exact", e.text]))
+          .on_click((_e, cx) => this.act(cx, [isDone ? "reopen" : "done", "--id", e.id]))
           .child(isDone ? "[x]" : left ? "[?]" : started ? "[►]" : "[ ]"))
         .when(Boolean(a), (el) => el.child(h_flex().id(`agent-${i}`).h(cell).flex_none().gap(G.u).items_center().cursor_pointer()
           .tooltip(`${a.program?.name ?? "Its agent"} is ${a.status}. Click to go to it.`)
@@ -217,7 +217,7 @@ export default class Todo extends View {
         // Always there, so the text doesn't wrap differently under the pointer.
         .child(h_flex().w(2 * cell).h(cell).flex_none().justify_end()
           .when(hot && (e.state === "open" || left), (el) => el.child(button(`hand-${i}`, "►", "Hand it to an agent", () => this.hand(space, e, G), t.accent)))
-          .when(hot, (el) => el.child(button(`drop-${i}`, "×", "Delete this line", (cx) => this.act(cx, ["rm", "--exact", e.text])))));
+          .when(hot, (el) => el.child(button(`drop-${i}`, "×", "Delete this line", (cx) => this.act(cx, ["rm", "--id", e.id])))));
     };
 
     const title = views(t, G, "todo", { todo: todo.length ? [String(todo.length), t.muted] : null });
@@ -251,7 +251,7 @@ export default class Todo extends View {
   }
 
   hand(space, e, G) {
-    openOverlay({ mod: "cmdr-todo", kind: "popup", frame: "none", at: "pointer", width: 53 * G.u, height: 49 * G.u, props: { menu: { space: space.id, text: e.text } } });
+    openOverlay({ mod: "cmdr-todo", kind: "popup", frame: "none", at: "pointer", width: 53 * G.u, height: 49 * G.u, props: { menu: { space: space.id, text: e.text, id: e.id } } });
   }
 
   // ---- the ► menu: who gets this line ----
@@ -284,7 +284,7 @@ export default class Todo extends View {
       const m = props().menu;
       try {
         const got = await work();
-        await ask(this.target(), ["start", "--exact", m.text, "--agent", bare(got.agent), "--tab", bare(got.tab) || "-"]);
+        await ask(this.target(), ["start", "--id", m.id, "--agent", bare(got.agent), "--tab", bare(got.tab) || "-"]);
       } catch (err) {
         notify({ title: "Couldn't hand it over", body: String(err?.message ?? err).split("\n")[0].slice(0, 160), level: "error" });
       }
