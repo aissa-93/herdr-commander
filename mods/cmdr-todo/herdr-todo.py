@@ -29,11 +29,15 @@ say which with --space.
 Options: --space <id>, --name <space name>, --json (print the list as JSON),
 --exact (a line is named by its whole text), --id (by its stable identity), --agent <terminal> --tab <tab> (who starts it).
 """
-import fcntl
+from contextlib import contextmanager
+import base64
 import hashlib
 import json
+import ntpath
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,10 +49,62 @@ ITEM = re.compile(r"^\s*[-*] \[( |x|X|/)\] (.*?)(?: <!-- agent:(\S+) tab:(\S+) -
 BOX = {"open": " ", "started": "/", "done": "x"}
 
 
+def windows():
+    return os.name == "nt"
+
+
+def installed_path():
+    return os.path.expanduser("~/.local/bin/herdr-todo.cmd" if windows() else "~/.local/bin/herdr-todo")
+
+
+def command_path(path):
+    """Quote a launcher for the shell used by the local hook."""
+    return subprocess.list2cmdline([path]) if windows() else shlex.quote(path)
+
+
+def hc_path():
+    found = shutil.which("hc")
+    if found:
+        return found
+    base = os.path.expanduser("~/.local/bin/hc")
+    if windows():
+        for suffix in (".cmd", ".exe", ""):
+            if os.path.isfile(base + suffix):
+                return base + suffix
+        return base + ".cmd"
+    return base
+
+
+@contextmanager
+def locked_file(path):
+    """One process at a time may read and update a space's list."""
+    with open(path, "a+b") as lock:
+        if windows():
+            import msvcrt
+            lock.seek(0, os.SEEK_END)
+            if lock.tell() == 0:
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def hc(*args):
-    exe = shutil.which("hc") or os.path.expanduser("~/.local/bin/hc")
+    exe = hc_path()
     try:
-        r = subprocess.run([exe, *args, "--json"], capture_output=True, text=True, timeout=6)
+        r = subprocess.run([exe, *args, "--json"], capture_output=True, text=True, encoding="utf-8", timeout=6)
         return json.loads(r.stdout) if r.returncode == 0 else None
     except Exception:
         return None
@@ -91,7 +147,7 @@ def alive():
 def label(space):
     """The name the person gave the space in Herdr's sidebar, if they did (this machine only)."""
     try:
-        with open(os.path.expanduser("~/.config/herdr-app/shared.json")) as f:
+        with open(os.path.expanduser("~/.config/herdr-app/shared.json"), encoding="utf-8") as f:
             return (json.load(f).get("space.labels") or {}).get(space) or None
     except Exception:
         return None
@@ -184,38 +240,144 @@ def show(entries, me, name, every=False, live=None):
 MARK = "herdr-todo hook"  # how our hook entries are told from the others
 
 
+def own_hook(hook):
+    command = hook.get("command") or ""
+    return MARK in command or bool(re.search(r"herdr-todo(?:\.cmd)?[\"'\s]+hook(?:\s|$)", command))
+
+
 def source():
-    return open(os.path.realpath(__file__)).read() if "__file__" in globals() else None
+    if "__file__" not in globals():
+        return None
+    with open(os.path.realpath(__file__), encoding="utf-8") as f:
+        return f.read()
+
+
+def remote_python(hc_exe, on):
+    """Discover a Python executable on a remote machine through hc exec."""
+    probe = 'import json,os,sys; print(json.dumps({"platform":os.name,"executable":sys.executable,"version":list(sys.version_info[:3])}))'
+
+    def usable(output):
+        for line in output.splitlines():
+            try:
+                info = json.loads(line)
+                version = info.get("version")
+                platform = info.get("platform")
+                path_module = ntpath if platform == "nt" else posixpath
+                if (platform in ("nt", "posix") and isinstance(version, list) and
+                        len(version) >= 2 and all(isinstance(part, int) for part in version[:2]) and
+                        tuple(version[:2]) >= (3, 9) and path_module.isabs(info.get("executable") or "")):
+                    return info
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return None
+
+    for candidate in (("py", "-3"), ("python3",), ("python",)):
+        try:
+            result = subprocess.run(
+                [hc_exe, "exec", "--on", on, "-i", *candidate, "-c", probe],
+                input="", capture_output=True, text=True, encoding="utf-8", timeout=15,
+            )
+            info = usable(result.stdout) if result.returncode == 0 else None
+            if info:
+                return info
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    # A long-running Herdr core may retain an old PATH after Python was installed.
+    # Ask PowerShell to find per-user installations without relying on that PATH.
+    encoded_probe = base64.b64encode(probe.encode("utf-8")).decode("ascii")
+    safe_probe = "import base64;exec(base64.b64decode('%s'))" % encoded_probe
+    ps_script = """$root = Join-Path $env:LOCALAPPDATA 'Programs\\Python'
+$probe = '%s'
+Get-ChildItem -LiteralPath $root -Directory -Filter 'Python*' -ErrorAction SilentlyContinue |
+  Sort-Object Name -Descending |
+  ForEach-Object {
+    $python = Join-Path $_.FullName 'python.exe'
+    if (Test-Path -LiteralPath $python -PathType Leaf) {
+      & $python -c $probe
+    }
+  }
+""" % safe_probe.replace("'", "''")
+    encoded = base64.b64encode(ps_script.encode("utf-16le")).decode("ascii")
+    try:
+        result = subprocess.run(
+            [hc_exe, "exec", "--on", on, "-i", "powershell.exe", "-NoProfile", "-NonInteractive",
+             "-EncodedCommand", encoded],
+            input="", capture_output=True, text=True, encoding="utf-8", timeout=20,
+        )
+        if result.returncode == 0:
+            return usable(result.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+REMOTE_BOOTSTRAP = """import os
+import pathlib
+import subprocess
+import sys
+
+remove = sys.argv[1] == "uninstall"
+path = pathlib.Path.home() / ".local" / "bin" / ("herdr-todo.py" if os.name == "nt" else "herdr-todo")
+if not remove:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        path.unlink()
+    path.write_text(sys.stdin.read(), encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(path.stat().st_mode | 0o111)
+result = subprocess.call([sys.executable, str(path), "uninstall" if remove else "install"])
+if remove and result == 0 and os.name == "nt":
+    path.unlink(missing_ok=True)
+raise SystemExit(result)
+"""
 
 
 def install(remove, on):
     """Adds (or removes) the hook in the agents' own settings. Never run by the panel:
     it changes how the person's agents behave, so the person runs it."""
     if on:
-        src = source()
-        hc_exe = shutil.which("hc") or os.path.expanduser("~/.local/bin/hc")
-        there = 'python3 "$HOME/.local/bin/herdr-todo" %s' % ("uninstall" if remove else "install")
-        if not remove:
-            there = 'mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/herdr-todo" && chmod +x "$HOME/.local/bin/herdr-todo" && ' + there
-        r = subprocess.run([hc_exe, "exec", "--on", on, "-i", "sh", "-c", there], input="" if remove else src, text=True)
+        hc_exe = hc_path()
+        remote = remote_python(hc_exe, on)
+        if not remote:
+            print("herdr-todo: no Python 3.9 or newer found on %s" % on, file=sys.stderr)
+            return 1
+        r = subprocess.run(
+            [hc_exe, "exec", "--on", on, "-i", remote["executable"], "-c", REMOTE_BOOTSTRAP,
+             "uninstall" if remove else "install"],
+            input="" if remove else source(), text=True, encoding="utf-8",
+        )
         return r.returncode
-    exe = os.path.expanduser("~/.local/bin/herdr-todo")
+    exe = installed_path()
     if not remove:
         me = os.path.realpath(__file__)
-        if os.path.realpath(exe) != me:
-            os.makedirs(os.path.dirname(exe), exist_ok=True)
+        os.makedirs(os.path.dirname(exe), exist_ok=True)
+        if windows():
+            # A symlink needs special privileges on many Windows installations.
+            # The launcher also lets an agent call herdr-todo directly from cmd.
+            line = '@echo off\r\n%s %s %%*\r\n' % (
+                subprocess.list2cmdline([sys.executable]),
+                subprocess.list2cmdline([me]),
+            )
+            with open(exe, "w", encoding="utf-8", newline="") as f:
+                f.write(line)
+            print("wrote %s" % exe)
+        elif os.path.realpath(exe) != me:
             if os.path.lexists(exe):
                 os.remove(exe)
             os.symlink(me, exe)
             print("linked %s -> %s" % (exe, me))
-    command = "%s hook 2>/dev/null || true" % exe
+    command = "%s hook" % command_path(exe)
+    if windows():
+        command += " 2>nul"
+    else:
+        command += " 2>/dev/null || true"
     for tool, path in (("Claude Code", "~/.claude/settings.json"), ("Codex", "~/.codex/hooks.json")):
         path = os.path.expanduser(path)
         if not os.path.isdir(os.path.dirname(path)):
             print("%s: not set up here, skipped" % tool)
             continue
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 before = f.read()
             data = json.loads(before)
         except FileNotFoundError:
@@ -225,7 +387,7 @@ def install(remove, on):
             continue
         hooks = data.setdefault("hooks", {})
         for event in ("SessionStart", "UserPromptSubmit", "Stop"):
-            groups = [g for g in hooks.get(event, []) if not any(MARK in (h.get("command") or "") for h in g.get("hooks", []))]
+            groups = [g for g in hooks.get(event, []) if not any(own_hook(h) for h in g.get("hooks", []))]
             if not remove:
                 groups.append({"hooks": [{"type": "command", "command": command, "timeout": 10}]})
             if groups:
@@ -252,14 +414,17 @@ def install(remove, on):
             print("%s: already %s" % (tool, "without it" if remove else "set up"))
             continue
         if before is not None:
-            with open(path + ".before-herdr-todo", "w") as f:
+            with open(path + ".before-herdr-todo", "w", encoding="utf-8") as f:
                 f.write(before)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(after)
         print("%s: %s %s%s" % (tool, "removed from" if remove else "added to", path, "" if before is None else " (the file as it was: %s.before-herdr-todo)" % path))
     if not remove:
         print("New agent sessions in Herdr are told about their space's list from now on.")
         print("Codex asks you once to trust the new hook; sessions already running pick it up when restarted.")
+    elif windows() and os.path.isfile(exe):
+        os.remove(exe)
+        print("removed %s" % exe)
     return 0
 
 
@@ -327,10 +492,9 @@ def main():
     os.makedirs(ROOT, exist_ok=True)
     os.makedirs(STATE, exist_ok=True)
     said = []
-    with open(os.path.join(STATE, "lock"), "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with locked_file(os.path.join(STATE, "lock")):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 before = f.read()
         except OSError:
             before = None
@@ -418,7 +582,7 @@ def main():
         after = render(entries)
         if after != before and (before is not None or items(entries)):
             tmp = "%s.%d" % (path, os.getpid())
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(after)
             os.replace(tmp, path)
         current = after if os.path.exists(path) else ""
@@ -427,7 +591,7 @@ def main():
     digest = hashlib.sha1(current.encode()).hexdigest()
     seen_path = os.path.join(STATE, "%s.%s.json" % (space, re.sub(r"[^A-Za-z0-9_-]", "_", me or "none")))
     try:
-        with open(seen_path) as f:
+        with open(seen_path, encoding="utf-8") as f:
             seen = json.load(f)
     except Exception:
         seen = {}
@@ -439,7 +603,7 @@ def main():
         if read:
             seen["hash"] = digest
         try:
-            with open(seen_path, "w") as f:
+            with open(seen_path, "w", encoding="utf-8") as f:
                 json.dump(seen, f)
         except OSError:
             pass
@@ -474,7 +638,10 @@ def main():
         briefed = event != "SessionStart" and session and seen.get("session") == session
         if briefed and seen.get("hash") == digest:
             return 0
-        call = "herdr-todo" if shutil.which("herdr-todo") or "__file__" not in globals() else "python3 %s" % os.path.realpath(__file__)
+        call = "herdr-todo" if shutil.which("herdr-todo") or "__file__" not in globals() else "%s %s" % (
+            command_path(sys.executable if windows() else "python3"),
+            command_path(os.path.realpath(__file__)),
+        )
         if briefed:
             text = "The to-do list of this Herdr space changed since you last saw it.\n" + show(entries, me, name, live=live)
         else:
@@ -507,4 +674,7 @@ def fail(opt, message, entries=None, path=None, space=None):
 
 
 if __name__ == "__main__":
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     sys.exit(main())

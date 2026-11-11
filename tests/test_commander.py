@@ -17,11 +17,11 @@ class TodoTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='herdr-fix-test-')
         self.addCleanup(self.temp.cleanup)
-        self.env = {**os.environ, 'HOME': self.temp.name}
+        self.env = {**os.environ, 'HOME': self.temp.name, 'USERPROFILE': self.temp.name, 'PYTHONUTF8': '1'}
         self.env.pop('HC_TERMINAL_ID', None)
 
     def ask(self, *args, success=True):
-        r = subprocess.run(['python3', str(ROOT/'mods/cmdr-todo/herdr-todo.py'), '--space', 'test', '--agent', 'test-agent', '--json', *args], env=self.env, text=True, capture_output=True)
+        r = subprocess.run([sys.executable, '-X', 'utf8', str(ROOT/'mods/cmdr-todo/herdr-todo.py'), '--space', 'test', '--agent', 'test-agent', '--json', *args], env=self.env, text=True, encoding='utf-8', capture_output=True)
         self.assertEqual(r.returncode, 0 if success else 1, r.stderr)
         return json.loads(r.stdout)
 

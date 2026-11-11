@@ -40,12 +40,16 @@ const SOURCES = [
 // Where `machine` (null: this computer) is, or null when no service answered.
 async function locate(machine) {
   for (const [url, read] of SOURCES) {
-    try {
-      const r = await exec("curl", ["-fsS", "--max-time", "8", url], { on: machine, timeout: 15000 });
-      if (r.code !== 0) continue;
-      const p = read(JSON.parse(r.stdout));
-      if (Number.isFinite(p.lat) && Number.isFinite(p.lon) && (p.lat !== 0 || p.lon !== 0)) return p;
-    } catch (_e) { /* the next service */ }
+    // Windows has curl.exe; Linux and macOS usually have curl. Try both directly
+    // so geolocation works even when Python is unavailable on a machine.
+    for (const command of ["curl.exe", "curl"]) {
+      try {
+        const r = await exec(command, ["-fsS", "--max-time", "8", url], { on: machine, timeout: 15000 });
+        if (r.code !== 0) continue;
+        const p = read(JSON.parse(r.stdout));
+        if (Number.isFinite(p.lat) && Number.isFinite(p.lon) && (p.lat !== 0 || p.lon !== 0)) return p;
+      } catch (_e) { /* try the next executable or service */ }
+    }
   }
   return null;
 }
