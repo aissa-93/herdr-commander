@@ -19,15 +19,33 @@
             "children": [
                 {
                     "id": "sidebar",
-                    "type": "block",
-                    "content": {
-                        "mod": "cmdr-tree"
-                    },
+                    "type": "column",
+                    "children": [
+                        {
+                            "id": "tree",
+                            "type": "block",
+                            "content": {
+                                "mod": "cmdr-tree"
+                            }
+                        },
+                        {
+                            "id": "map",
+                            "type": "block",
+                            "content": {
+                                "mod": "cmdr-map"
+                            },
+                            "size": {
+                                "px": 126.88
+                            }
+                        }
+                    ],
                     "size": {
                         "px": 305.56
                     },
                     "min": 180,
-                    "max": 480
+                    "max": 480,
+                    "gap": 5.56,
+                    "resizable": false
                 },
                 {
                     "id": "work",

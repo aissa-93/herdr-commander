@@ -6,8 +6,7 @@
 // agent: status mark, what it's on, how long since it changed. More agents in the
 // space, and sub-agents, hang under it on tree lines. Click a space to switch,
 // right-click for its menu, drag to reorder; click an agent to go to it, right-click
-// to reply. Keys: cmdr-tree.reply, cmdr-tree.crew, cmdr-tree.project, cmdr-tree.activity
-// (fold the log), cmdr-tree.activity-clear.
+// to reply. Keys: cmdr-tree.reply, cmdr-tree.crew, cmdr-tree.project.
 //
 // A row's checkout also says how its branch stands on GitHub (asked of `gh`, where the
 // repo has a GitHub remote): its pull request's number and checks, else the branch's
@@ -74,10 +73,6 @@ function question(text) {
 }
 
 // When something happened: the time today, the date before that.
-function clock(at, now) {
-  const d = new Date(at), p = (n) => String(n).padStart(2, "0");
-  return now - at < 20 * 3600000 ? `${p(d.getHours())}:${p(d.getMinutes())}` : `${p(d.getMonth() + 1)}/${p(d.getDate())}`;
-}
 
 // GitHub's checks on a commit as one word: any failing is "fail", else any still
 // running is "pending", else "pass"; null when there are none.
@@ -101,10 +96,9 @@ const PR_TTL = { pending: 30000, settled: 180000, none: 600000, never: 3600000 }
 export default class Tree extends View {
   init(_props, cx) {
     if (props()?.menu) return this.menuInit(cx);
-    this.started = Date.now();
-    // What happened, newest first: { at, k: "done" | "blocked", addr, label, took, icon, tint }.
-    this.log = JSON.parse(localStorage.getItem("activity") ?? "[]");
-    this.logFolded = localStorage.getItem("activity.folded") === "1";
+    // There was an activity log once: what it kept goes.
+    localStorage.removeItem("activity"); localStorage.removeItem("activity.folded");
+    if (shared("commander.activity") != null) setShared("commander.activity", null);
     this.pr = {}; // repo and branch -> { at, ttl, v: its pull request or last CI run, null: none }
     this.prPending = new Map(); // repo and branch -> a where() to ask from
     this.filed = {}; // space -> the project its row is under
@@ -121,9 +115,6 @@ export default class Tree extends View {
         // Answer the agent that has waited longest (blocked, then done), else the one in front.
         if (c === "reply") this.replyNext();
         if (c === "crew") this.newCrew();
-        // The activity log, for keys: cmdr-tree.activity folds it, cmdr-tree.activity-clear empties it.
-        if (c === "activity") { this.logFolded = !this.logFolded; localStorage.setItem("activity.folded", this.logFolded ? "1" : "0"); }
-        if (c === "activity-clear") { this.log = []; localStorage.setItem("activity", "[]"); }
         cx.notify();
       }
     });
@@ -476,7 +467,6 @@ export default class Tree extends View {
       const s = a.status === "done" ? "idle" : a.status;
       const was = this.changed[a.address];
       if (was?.s === s) continue;
-      if (was) this.note(a, was, s, now);
       this.changed[a.address] = { s, at: was ? now : tabs.get(a.tab)?.changed_at ?? 0 };
       dirty = true;
     }
@@ -489,20 +479,6 @@ export default class Tree extends View {
 
   since(a) {
     return this.changed[a.address]?.at ?? 0;
-  }
-
-  // The activity log takes the changes that are news: an agent finished its turn, or
-  // stopped to ask. Starting isn't (the tree shows who is working).
-  note(a, was, s, now) {
-    let e = null;
-    if (s === "blocked") e = { k: "blocked" };
-    // Right after a start the change happened while the app was closed: how long it
-    // worked isn't known.
-    else if (was.s === "working" && s === "idle") e = { k: "done", took: was.at && now - this.started > 20000 ? now - was.at : 0 };
-    if (!e) return;
-    this.log.unshift({ ...e, at: now, addr: a.address, label: this.labelOf?.(a) || a.space_name, icon: a.program?.icon ?? null, tint: Boolean(a.program?.tint) });
-    this.log.length = Math.min(this.log.length, 60);
-    localStorage.setItem("activity", JSON.stringify(this.log));
   }
 
   // What each waiting agent is asking, read off its screen. Only while some wait.
@@ -989,44 +965,6 @@ export default class Tree extends View {
         .when(list.length > shown.length, (el) => el.child(div().px(2 * G.u).pb(G.u).text_color(t.muted).child(`+${list.length - shown.length} more`))));
   }
 
-  // What finished and what asked, newest first; six lines show, the rest scroll.
-  activity(t, G, list, now) {
-    const live = new Map(list.map((a) => [a.address, a]));
-    const act = (id, text, tip, action) => div().id(id).flex_none().px(G.u).h(2 * G.u).bg(t.canvas).text_color(t.muted).cursor_pointer()
-      .hover((s) => s.text_color(t.foreground)).tooltip(tip).on_click((_e, cx) => action(cx)).child(text);
-    const fold = (cx) => {
-      this.logFolded = !this.logFolded;
-      localStorage.setItem("activity.folded", this.logFolded ? "1" : "0");
-      cx.notify();
-    };
-    const right = h_flex().flex_none().gap(G.u)
-      .when(!this.logFolded && this.log.length > 0, (el) => el.child(act("activity-clear", "clear", "Forget these", (cx) => {
-        this.log = [];
-        localStorage.setItem("activity", "[]");
-        cx.notify();
-      })))
-      .child(act("activity-fold", this.logFolded ? "►" : "▼", this.logFolded ? "Show what happened" : "Fold away", fold));
-    const line = (e, i) => {
-      const a = live.get(e.addr);
-      const pic = icon({ icon: e.icon, tint: e.tint }, G, t.foreground);
-      const done = e.k === "done";
-      const tip = `${done ? `Finished${e.took ? ` after working ${duration(e.took)}` : ""}` : "Stopped to ask you"} · ${a ? "click to go to it" : "it has closed since"}`;
-      return h_flex().id(`event-${i}`).h(G.row).flex_none().px(2 * G.u).gap(G.u).items_center()
-        .when(Boolean(a), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => run("pane.focus", { pane: a.pane })))
-        .tooltip(tip)
-        .child(div().flex_none().text_color(t.muted).child(clock(e.at, now)))
-        .child(mark(t, G, done ? "done" : "blocked"))
-        .when(Boolean(pic), (el) => el.child(pic))
-        .child(div().flex_1().min_w(0).truncate().text_color(a ? t.foreground : t.muted).child(e.label))
-        .child(div().flex_none().text_color(t.muted).child(done ? (e.took ? duration(e.took) : "") : "asked"));
-    };
-    const title = tag(t, G, this.logFolded && this.log.length ? `Activity ${this.log.length}` : "Activity", t.canvas, t.foreground);
-    return frame(t, G, { title, right, fill: false }, this.logFolded ? div().h(G.u)
-      : v_flex().id("activity").w_full().max_h(6 * G.row + G.u).pt(G.u).overflow_y_scrollbar()
-        .children(this.log.map(line))
-        .when(!this.log.length, (el) => el.child(div().h(G.row).px(2 * G.u).flex().items_center().text_color(t.muted).child("Nothing has finished or asked yet."))));
-  }
-
   // For the other Commander mods: each project's hue and where each space is filed.
   publish(key, value) {
     if (JSON.stringify(shared(key) ?? {}) !== JSON.stringify(value)) setShared(key, value);
@@ -1055,7 +993,6 @@ export default class Tree extends View {
         v_flex().id("tree").size_full().min_h(0).pt(G.u).overflow_y_scrollbar().mode("always")
           .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
           .children(rows))))
-      .child(div().flex_none().child(this.activity(t, G, list, now)))
       .when(waiting.length > 0, (el) => el.child(div().flex_none().child(this.queue(t, G, waiting, ctx))));
   }
 
