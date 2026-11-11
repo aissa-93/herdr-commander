@@ -23,6 +23,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, spaces, panes, run, openOverlay, closeOverlay, props, nextCommand, exec, theme, shared, setShared, window, layout, appHome, readTextFile, notify } from "herdr";
 import { grid, chord, pretty, mark, bump, BUMP_MAX, lifted } from "./ui.js";
+import { execPython } from "./runtime.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -304,7 +305,7 @@ export default class Menubar extends View {
         const beside = source && tabPanes(source.tab).find((p) => p.pane !== m.pane)?.pane;
         const args = m.op === "tab" ? ["tab", m.pane, ...(beside ? [beside] : [])] : ["join", m.tab, m.pane, m.direction ?? "right"];
         try {
-          const r = await exec("python3", [`${appHome()}/mods/cmdr-tabs/herdr-move.py`, ...args], { timeout: 60000 });
+          const r = await execPython([`${appHome()}/mods/cmdr-tabs/herdr-move.py`, ...args], { timeout: 60000 });
           if (r.code !== 0) notify({ title: "Couldn't move the pane", body: (r.stderr || r.stdout).trim().split("\n").at(-1), level: "error" });
         } catch (e) {
           notify({ title: "Couldn't move the pane", body: String(e?.message ?? e), level: "error" });
@@ -332,13 +333,14 @@ export default class Menubar extends View {
         const src = await readTextFile(path);
         if (src) {
           const was = shared("commander.usage")?.machines ?? {};
-          const now = { at: Date.now(), machines: {} };
+          const now = { at: Date.now(), machines: {}, errors: {} };
           for (const on of [null, ...new Set(spaces().map((s) => s.machine).filter(Boolean))]) {
             const key = on ?? "";
             try {
-              const r = on ? await exec("python3", ["-c", src], { on, timeout: 60000 }) : await exec("python3", [path], { timeout: 120000 });
+              const r = on ? await execPython(["-c", src], { on, timeout: 60000 }) : await execPython([path], { timeout: 120000 });
               if (r.code === 0) now.machines[key] = JSON.parse(r.stdout);
-            } catch {}
+              else now.errors[key] = r.stderr.trim() || "Usage helper failed.";
+            } catch (error) { now.errors[key] = String(error?.message ?? error); }
             if (!now.machines[key] && was[key]) now.machines[key] = was[key];
           }
           setShared("commander.usage", now);
@@ -357,7 +359,7 @@ export default class Menubar extends View {
   // The grid needs the screen's scale, which a mod can't ask for. Hyprland says; anywhere
   // else the window's own picture does: its width in device pixels (herdr-app shot, read
   // from the PNG's header) over this bar's width, which spans the window. Failing both
-  // (no sh: Windows) it stays 1.6 until the person sets it: View > Screen scale, which
+  // it stays 1.6 until the person sets it: View > Screen scale, which
   // is then kept (cmdr-menubar.rescale goes back to finding it).
   async detect() {
     if (shared("commander.scale.manual")) return;
@@ -368,9 +370,9 @@ export default class Menubar extends View {
     } catch {}
     if (!scale && this.width) {
       try {
-        const r = await exec("sh", ["-c", 'd=$(mktemp -d) && herdr-app shot "$d/w.png" >/dev/null 2>&1 && od -An -tu1 -j16 -N4 "$d/w.png"; rm -rf "$d"']);
-        const b = r.stdout.trim().split(/\s+/).map(Number);
-        const px = b.length === 4 ? b.reduce((n, v) => n * 256 + v, 0) : 0;
+        const code = 'import os,struct,subprocess,tempfile\nwith tempfile.TemporaryDirectory(prefix="herdr-scale-") as folder:\n path=os.path.join(folder,"window.png")\n subprocess.run(["herdr-app","shot",path],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n with open(path,"rb") as image: header=image.read(24)\n if header[:8] != b"\\x89PNG\\r\\n\\x1a\\n": raise ValueError("Not a PNG")\n print(struct.unpack(">I",header[16:20])[0])';
+        const r = await execPython(["-c", code]);
+        const px = r.code === 0 ? Number(r.stdout.trim()) : 0;
         // on_size_change counts in window px (zoom already in). Scales come in
         // twentieths (1, 1.25, 1.6, 2).
         if (px) scale = Math.round((px / this.width) * 20) / 20;

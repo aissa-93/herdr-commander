@@ -20,6 +20,7 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, machines, panes, agents, terminals, focused, run, openOverlay, closeOverlay, props, nextCommand, exec, hc, theme, shared, setShared, watchFolder, window, home, appHome, readTextFile, setAgentOrder } from "herdr";
 import { projects, fileSpace, addProject, editProject, removeProject, newSession, adopt, filing, RANK } from "./projects.js";
 import { grid, mark, duration, frame, tag, hairline, icon, mix, faded, palette, lifted } from "./ui.js";
+import { openUrl } from "./runtime.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -28,7 +29,15 @@ function place(s, ps) {
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
-const base = (path) => path.replace(/\/+$/, "").split("/").pop();
+// Git, terminals, and the file watcher may spell the same Windows path with
+// different slashes or drive-letter case. Preserve the original for I/O.
+const pathKey = (path) => {
+  const slash = String(path ?? "").replace(/\\/g, "/");
+  let trimmed = slash.replace(/\/+$/, "") || (slash.startsWith("//") ? "//" : "/");
+  if (/^[A-Za-z]:$/.test(trimmed)) trimmed += "/";
+  return /^(?:[A-Za-z]:|\/\/)/.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+};
+const base = (path) => String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop() || path;
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
@@ -51,7 +60,7 @@ function leadPanes(all) {
 function title(tab, l) {
   const prog = l?.program?.name;
   const live = clean(l?.title);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
+  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:[\\/]|^\\\\/.test(live) && !live.includes("@") && live.toLowerCase() !== l?.program?.key;
   return (tab.name === prog || !tab.named) && telling ? live : tab.name;
 }
 
@@ -298,11 +307,11 @@ export default class Tree extends View {
       const [topDir = "", prefix = ""] = top.stdout.split("\n");
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
-      const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
+      const name = pathKey(repo).endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/i, "");
       const parts = prefix.trim().split("/").filter(Boolean);
       const sub = parts.length === 0 ? "" : parts.length === 1 ? parts[0] : `\u2026/${parts[parts.length - 1]}`;
       const root = topDir.trim();
-      const info = { name, sub, root, lead: parts[0] ?? "", leaf: parts[parts.length - 1] ?? name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${topDir.trim()}/.git` };
+      const info = { name, sub, root, lead: parts[0] ?? "", leaf: parts[parts.length - 1] ?? name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, pathKey(repo)]), linked: pathKey(repo) !== pathKey(`${root}/.git`) };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.ab ")) {
@@ -396,7 +405,7 @@ export default class Tree extends View {
       .on_mouse_down("left", swallow).on_mouse_up("left", swallow)
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        cx.spawn(async () => { try { await exec("xdg-open", [v.url]); } catch { try { await exec("open", [v.url]); } catch {} } });
+        cx.spawn(async () => { try { await openUrl(v.url); } catch {} });
       })
       .child(div().flex_none().child(word))
       .when(Boolean(state), (el) => el.child(div().flex_none().child(state)))
@@ -404,16 +413,17 @@ export default class Tree extends View {
   }
 
   watch(repo, cx) {
-    if (this.watching.has(repo)) return;
-    this.watching.add(repo);
+    const id = pathKey(repo);
+    if (this.watching.has(id)) return;
+    this.watching.add(id);
     cx.spawn(async (cx) => {
       try {
-        while (this.watching.has(repo)) {
+        while (this.watching.has(id)) {
           await watchFolder(repo);
-          const mine = JSON.stringify([null, repo]);
-          if (this.watching.has(repo)) this.refreshGit(Object.keys(this.git).filter((k) => this.git[k]?.repo === mine), cx);
+          const mine = JSON.stringify([null, id]);
+          if (this.watching.has(id)) this.refreshGit(Object.keys(this.git).filter((k) => this.git[k]?.repo === mine), cx);
         }
-      } catch { this.watching.delete(repo); }
+      } catch { this.watching.delete(id); }
     });
   }
 
@@ -803,8 +813,8 @@ export default class Tree extends View {
   // "omarchy"). Other mods read these from shared("space.labels").
   label(w, g) {
     if (w.named || !g?.lead) return w.name;
-    const root = g.root.replace(/\/+$/, "");
-    const umbrella = base(root).startsWith(".") || root === home().replace(/\/+$/, "");
+    const root = pathKey(g.root);
+    const umbrella = base(root).startsWith(".") || root === pathKey(home());
     return umbrella ? g.lead : w.name;
   }
 

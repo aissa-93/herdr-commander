@@ -6,7 +6,7 @@ import vm from 'node:vm';
 // GPUI runs in Herdr, so replace only its host boundary. The real Notes class
 // handles every edit, save, space switch, and conflict under test.
 const source = fs.readFileSync(new URL('../mods/cmdr-notes/main.js', import.meta.url), 'utf8')
-  .replace(/^import .*;\n/gm, '').replace('export default class', 'class');
+  .replace(/^import .*;\r?\n/gm, '').replace('export default class', 'class');
 const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return {promise, resolve}; };
 function host(files = new Map(), store = new Map()) {
   const pending = [];

@@ -17,9 +17,18 @@ import { grid, palette, faded, mix, frame, tag, lifted } from "./ui.js";
 const compact = (n) => (n < 1000 ? String(n) : n < 999500 ? `${Math.round(n / 1000)}k` : n < 99950000 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`);
 // Dollars, in the same few characters as `compact`.
 const money = (v) => (v < 0.005 ? "$0" : v < 9.995 ? `$${v.toFixed(2)}` : v < 999.5 ? `$${Math.round(v)}` : `$${(v / 1000).toFixed(1)}k`);
-const base = (path) => path.replace(/\/+$/, "").split("/").pop() || path;
+// Compare Windows paths without depending on the slash or case chosen by a log,
+// terminal, or project entry. Keep the leading // of a UNC share.
+const pathKey = (path) => {
+  const slash = String(path ?? "").replace(/\\/g, "/");
+  let trimmed = slash.replace(/\/+$/, "") || (slash.startsWith("//") ? "//" : "/");
+  if (/^[A-Za-z]:$/.test(trimmed)) trimmed += "/";
+  return /^(?:[A-Za-z]:|\/\/)/.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+};
+const base = (path) => String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop() || path;
+const absolute = (path) => /^(?:\/|[A-Za-z]:\/)/.test(String(path).replace(/\\/g, "/"));
 // A home folder holds every project: it only claims what ran right in it.
-const homeLike = (f) => /^\/(home|Users)\/[^/]+$/.test(f) || f === "/root";
+const homeLike = (f) => pathKey(f) === pathKey(home()) || /^\/(home|Users)\/[^/]+$/.test(pathKey(f)) || pathKey(f) === "/root" || /^[a-z]:\/users\/[^/]+$/.test(pathKey(f));
 const DAY = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const TOOLS = { claude: "Claude Code", codex: "Codex" };
 const p2 = (n) => String(n).padStart(2, "0");
@@ -28,8 +37,8 @@ const hhmm = (d) => `${p2(d.getHours())}:${p2(d.getMinutes())}`;
 // Every folder that stands for a project: [{ m: machine, folder, pid }].
 function claims(pj) {
   const filed = shared("commander.filing") ?? {};
-  const h = home().replace(/\/+$/, "");
-  const abs = (f, m) => (!f ? null : f.startsWith("/") ? f.replace(/\/+$/, "") : m ? null : `${h}/${f}`.replace(/\/+$/, ""));
+  const h = pathKey(home());
+  const abs = (f, m) => (!f ? null : absolute(f) ? pathKey(f) : m ? null : pathKey(`${h}/${f}`));
   const out = [];
   for (const p of pj.list) {
     const f = abs(p.folder, p.machine ?? null);
@@ -40,22 +49,23 @@ function claims(pj) {
     const pid = filed[s.id] ?? pj.of[s.id];
     if (!pid) continue;
     const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-    const folders = new Set([abs(s.folder, s.machine ?? null), ...ps.filter((p) => tabs.has(p.tab) && p.cwd).map((p) => p.cwd.replace(/\/+$/, ""))]);
+    const folders = new Set([abs(s.folder, s.machine ?? null), ...ps.filter((p) => tabs.has(p.tab) && p.cwd).map((p) => pathKey(p.cwd))]);
     for (const f of folders) if (f) out.push({ m: s.machine ?? null, folder: f, pid });
   }
   return out;
 }
 
 function owner(list, m, cwd) {
+  const path = pathKey(cwd);
   let best = null;
   for (const c of list) {
     if (c.m !== m) continue;
-    const inside = cwd === c.folder || (!homeLike(c.folder) && cwd.startsWith(`${c.folder}/`));
+    const inside = path === c.folder || (!homeLike(c.folder) && path.startsWith(c.folder.endsWith("/") ? c.folder : `${c.folder}/`));
     if (inside && (!best || c.folder.length > best.folder.length)) best = c;
   }
   if (best) return best.pid;
-  const parts = cwd.split("/");
-  return list.find((c) => c.own && c.m === m && !homeLike(c.folder) && parts.includes(base(c.folder)))?.pid ?? null;
+  const parts = path.split("/");
+  return list.find((c) => c.own && c.m === m && !homeLike(c.folder) && parts.includes(pathKey(base(c.folder))))?.pid ?? null;
 }
 
 export default class Usage extends View {

@@ -19,6 +19,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, agents, terminals, run, exec, hc, openOverlay, closeOverlay, props, theme, shared, setShared, appHome, home, readTextFile, watchFolder, knownAgents, notify, window } from "herdr";
 import { grid, mark, icon, frame, tag, views, lifted } from "./ui.js";
+import { execPython } from "./runtime.js";
 
 const script = () => `${appHome()}/mods/cmdr-todo/herdr-todo.py`;
 const folder = () => `${home().replace(/\/+$/, "")}/.herdr/todos`;
@@ -28,7 +29,7 @@ const short = (text) => (text.length > 36 ? `${text.slice(0, 35)}…` : text);
 const nameOf = (s) => shared("space.labels")?.[s.id] ?? s.name;
 const pending = (list) => list.filter((e) => e.state !== "done").length;
 // Said with a line that is handed over, so an agent whose hooks don't tell it knows the list.
-const NOTE = "(From this Herdr space's shared to-do list, where it is now marked as yours. `herdr-todo` shows the list: run `herdr-todo done <its number>` when it is finished, and `herdr-todo add \"...\"` for further steps or follow-ups.)";
+const note = (command) => `(From this Herdr space's shared to-do list, where it is now marked as yours. ${command} shows the list: use it with done <its number> when finished, and add \"...\" for further steps or follow-ups.)`;
 
 // Runs herdr-todo for a space, where the space is. Returns { items, said } or { error, items }.
 let source = null;
@@ -37,8 +38,9 @@ async function ask(space, args) {
   let r;
   if (space.machine) {
     source ??= await readTextFile(script());
-    r = await exec("python3", ["-c", source, ...base], { on: space.machine, timeout: 20000 });
-  } else r = await exec("python3", [script(), ...base], { timeout: 20000 });
+    if (!source) throw new Error("The Commander to-do helper is missing. Reinstall Commander.");
+    r = await execPython(["-c", source, ...base], { on: space.machine, timeout: 20000 });
+  } else r = await execPython([script(), ...base], { timeout: 20000 });
   try { return JSON.parse(r.stdout); } catch { throw new Error(r.stderr.trim().split("\n").pop() || "herdr-todo gave no answer"); }
 }
 
@@ -50,31 +52,40 @@ export default class Todo extends View {
     this.hovered = null;
     this.editing = null; // { id, text } for the line the field is changing
     this.text = "";
+    this.problem = null;
+    this.watching = false;
     this.input = InputState.new({ placeholder: "Add a to-do, then Enter" });
     this.input.on("change", (_e, cx) => { this.text = this.input.value(); cx.notify(); });
     this.input.on("submit", (_e, cx) => this.submit(cx));
     // Follow the files on this computer: an agent's change, the ► menu's.
     cx.spawn(async (cx) => {
-      try { await exec("mkdir", ["-p", folder()]); } catch {}
-      await this.count(spaces().filter((s) => !s.machine).map((s) => s.id));
       try {
+        const created = await execPython(["-c", "import os,sys; os.makedirs(sys.argv[1], exist_ok=True)", folder()]);
+        if (created.code !== 0) throw new Error(created.stderr || "Could not create the to-do folder.");
+        await this.count(spaces().filter((s) => !s.machine).map((s) => s.id));
+        this.watching = true;
         for (;;) {
           const paths = await watchFolder(folder());
           // The folder itself: too much changed to say what; anything but a list: not ours.
-          const all = paths.some((p) => p.replace(/\/+$/, "") === folder());
-          const ids = all ? spaces().filter((s) => !s.machine).map((s) => s.id) : paths.map((p) => /\/([A-Za-z0-9_-]+)\.md$/.exec(p)?.[1]).filter(Boolean);
+          const normalize = (p) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+          const all = paths.some((p) => normalize(p) === normalize(folder()));
+          const ids = all ? spaces().filter((s) => !s.machine).map((s) => s.id) : paths.map((p) => /[\\/]([A-Za-z0-9_-]+)\.md$/.exec(p)?.[1]).filter(Boolean);
           if (!ids.length) continue;
           const here = this.current();
           if (here && !here.machine && ids.includes(here.id)) await this.read(here);
           await this.count(ids.filter((id) => id !== here?.id));
           cx.notify();
         }
-      } catch {}
+      } catch { this.watching = false; }
     });
     // A list on another machine can't be watched: looked at while it's the one shown.
     cx.timer.every(5000, (cx) => {
       const here = this.current();
-      if (here?.machine && window().active) cx.spawn(async (cx) => { await this.read(here); cx.notify(); });
+      if (window().active && (here?.machine || !this.watching)) cx.spawn(async (cx) => {
+        if (here) await this.read(here);
+        if (!this.watching) await this.count(spaces().filter((s) => !s.machine).map((s) => s.id));
+        cx.notify();
+      });
     });
     // The shown list follows the shown space.
     cx.timer.every(300, (cx) => this.follow(cx));
@@ -101,8 +112,11 @@ export default class Todo extends View {
   async read(space, fresh = false) {
     try {
       const out = await ask(space, ["json"]);
+      if (out.error) throw new Error(out.error);
       this.took(space, out.items ?? []);
-    } catch {
+      this.problem = null;
+    } catch (error) {
+      this.problem = String(error?.message ?? error);
       if (fresh) this.took(space, []);
     }
   }
@@ -138,6 +152,7 @@ export default class Todo extends View {
     cx.spawn(async (cx) => {
       try {
         const out = await ask(space, args);
+        this.problem = out.error ?? null;
         if (out.error) notify({ title: "To-do", body: out.error, level: "warning" });
         this.took(space, out.items ?? []);
       } catch (err) {
@@ -234,7 +249,8 @@ export default class Todo extends View {
       .child(div().h(G.px).flex_none().bg(this.editing ? t.accent : t.border))
       .child(v_flex().id("todo-list").flex_1().min_h(0).pt(G.u).overflow_y_scrollbar()
         .children(todo.map(row))
-        .when(mine && !all.length, (el) => el.child(div().px(2 * G.u).py(G.u).line_height(`${cell}px`).whitespace_normal().text_color(t.muted)
+        .when(Boolean(this.problem), (el) => el.child(div().px(2 * G.u).py(G.u).whitespace_normal().text_color(t.blocked).child(this.problem)))
+        .when(mine && !all.length && !this.problem, (el) => el.child(div().px(2 * G.u).py(G.u).line_height(`${cell}px`).whitespace_normal().text_color(t.muted)
           .child(`Nothing to do in ${nameOf(space)}. Type a line above; the agents working here add theirs. ► on a line hands it to an agent.`)))
         .when(done.length > 0, (el) => el
           .child(h_flex().h(G.row).flex_none().mt(G.u).px(2 * G.u).gap(G.u).items_center().text_color(t.dim)
@@ -259,10 +275,14 @@ export default class Todo extends View {
   menuInit(cx) {
     this.known = null; // the agents that can be started on the space's machine
     this.busy = null; // what it's doing, while it does it (the popup stays until then)
-    this.tool = false; // is herdr-todo there for the agent to run
+    this.tool = null; // the installed helper's path, even when it is not on PATH
     const space = this.target();
     cx.spawn(async () => {
-      try { this.tool = (await exec("sh", ["-c", 'command -v herdr-todo >/dev/null || test -x "$HOME/.local/bin/herdr-todo"'], { on: space?.machine ?? undefined })).code === 0; } catch {}
+      try {
+        const code = 'import json,os,shutil\np=shutil.which("herdr-todo")\nif not p:\n candidate=os.path.expanduser("~/.local/bin/herdr-todo.cmd" if os.name=="nt" else "~/.local/bin/herdr-todo")\n p=candidate if os.path.isfile(candidate) else None\nprint(json.dumps(p))';
+        const r = await execPython(["-c", code], { on: space?.machine ?? undefined });
+        if (r.code === 0) this.tool = JSON.parse(r.stdout);
+      } catch {}
     });
     cx.spawn(async (cx) => {
       try { this.known = (await knownAgents({ on: space?.machine ?? null })).filter((a) => a.installed).slice(0, 6); } catch { this.known = []; }
@@ -295,7 +315,7 @@ export default class Todo extends View {
   send(a, cx) {
     const text = props().menu.text;
     this.go(cx, `Typing it into ${a.program?.name ?? "the agent"}…`, async () => {
-      const r = await hc(["send", a.address, this.tool ? `${text} ${NOTE}` : text]);
+      const r = await hc(["send", a.address, this.tool ? `${text} ${note(`The helper at ${JSON.stringify(this.tool)}`)}` : text]);
       if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim() || "hc send failed");
       return { agent: a.address, tab: a.tab };
     });
@@ -305,7 +325,7 @@ export default class Todo extends View {
     const text = props().menu.text;
     const space = this.target();
     this.go(cx, `Starting ${agent.name}…`, async () => {
-      const r = await exec("herdr-app", ["do", "tab.new", "--space", space.id, "--name", short(text), "--argv", JSON.stringify(agent.run), "--task", this.tool ? `${text}\n\n${NOTE}` : text]);
+      const r = await exec("herdr-app", ["do", "tab.new", "--space", space.id, "--name", short(text), "--argv", JSON.stringify(agent.run), "--task", this.tool ? `${text}\n\n${note(`The helper at ${JSON.stringify(this.tool)}`)}` : text]);
       let made = null;
       try { made = JSON.parse(r.stdout); } catch {}
       if (r.code !== 0 || !made?.terminal) throw new Error(made?.error ?? (r.stderr.trim() || "The agent didn't start."));
