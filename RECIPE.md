@@ -137,7 +137,8 @@ Programs it runs and files it touches (tell the person before installing):
 - `python3 mods/cmdr-tabs/herdr-move.py`, here, for each move: it runs `herdr-app ls`, `herdr-app do` and `hc get`.
 - `cmdr-notes` reads and writes `~/.config/herdr-app/notes/<space id>.md`, on this computer.
 - `cmdr-tree` looks for `mods/retro-crew/main.js`, a crew launcher that is not part of this layout: only where that mod exists do a `Start a crew…` menu item and a `Crew` key cell (`cmdr-tree.crew`) show.
-- No `fetch`: apart from `gh`, nothing talks to the network.
+- Updates (`mods/cmdr-menubar/update.js`): 90 seconds after start and every 6 hours, `git clone` (the first time) or `git fetch` + `git reset --hard origin/release` + `git clean -fdx` in `<app folder>/.commander-update/repo`, from `https://github.com/aissa-93/herdr-commander.git`, branch `release`. `git ls-tree` and `git log --raw` there list every version each file has had, `herdr-app check` runs on each changed mod in that clone, and then the changed files are copied into the app folder. It writes `<app folder>/.commander-update/state.json` (the release it last applied) and adds keys to `keys.json`. With `<app folder>/.commander-dev` present it does nothing. This also reaches the network.
+- No `fetch`: apart from `gh`, the map's lookup and the updates' `git fetch`, nothing talks to the network.
 
 Art: the font is PxPlus IBM VGA 8x16 from The Ultimate Oldschool PC Font Pack by VileR (int10h.org), under CC BY-SA 4.0; its license is in `mods/cmdr-tree/fonts/`. Program icons are the app's own.
 
@@ -185,6 +186,10 @@ The globe is `backgrounds/commander-earth/000.png` to `479.png`: 312 × 312 px, 
 - The pictures are scaled to the terminal area (`fit: "contain"`), so unlike the text, the globe's pixels do not sit on the screen's pixel grid.
 - A new set of pictures needs a new folder name while the app runs (the cache again); then change `GLOBE.dir` and `GLOBE.frames` in `cmdr-menubar/main.js` and the two paths in the layout.
 
+- **Updates must never undo someone's work.** A file is replaced only when its git blob id (also computed with CRLF turned into LF, for Windows checkouts) is one the repo has had for that path, and removed only on the same condition. The layout file can't be compared that way, because the app rewrites it with its clicks and the globe's picture. So it is compared with `size`, `hidden`, `active`, `background`, `terminal_opacity` and the pane's `background` left out and numbers rounded to 0.01, and those fields are carried from the live layout to the new one. While Commander is shown, the new layout goes through `layout.set`, never a file write, or it races the globe. The machine the repo is made from has `.commander-dev`, or the updater would overwrite unpublished work with the release.
+- **The bar updates itself.** Saving a `cmdr-menubar` file reloads the script doing the update, so those files are written last and `state.json` after them. A run cut short there finds nothing left to copy the next time and just records the release.
+- **`release` is moved by CI** (`.github/workflows/compatibility.yml`, job `release`): after the tests pass on a push to `main`, and only if that commit is still `main`'s newest.
+
 ## Done when
 
 - `herdr-app check` passes for each of the ten mods, and `layout.switch {name: "commander"}` shows the window with no `layouts/commander.error`.
@@ -208,4 +213,6 @@ The globe is `backgrounds/commander-earth/000.png` to `479.png`: 312 × 312 px, 
 - `python3 mods/cmdr-usage/usage.py` prints JSON whose `cost` is `[today, week]` in dollars and whose `models` lists every model in the logs; working out one model's week by hand (tokens × the table's rates) matches its `models` entry.
 - The bar shows `Σ … today ≈$…`; `herdr-app do cmdr-menubar.usage` opens the popup, and clicking `$` turns every number, the day bars and the title to dollars.
 - With the globe revolving, the number in `main`'s `background.image` in `layouts/commander.json` goes up by about eight a second and follows `479` with `000`, and screenshots taken in quick succession all show a globe.
+- `node --test tests/update.test.mjs` passes: from a real git repo, a fresh install changes nothing and says nothing; a release then updates the unedited files, keeps an edited one and names it in the toast, removes a mod the repo dropped, adds a new key, adds the layout's new block with the old sizes kept, and goes through `layout.set` while Commander is shown. A layout rebuilt by hand is kept. `.commander-dev` and `commander.update` = `off` stop it.
+- `herdr-app do cmdr-menubar.update` shows `Commander is up to date` (or `Commander updated`), and `≡ > Update Commander` then shows the release's short commit id at its right.
 - `herdr-app do cmdr-menubar.globe` once stops that number; again removes `background` from `main` and `globe`, gives `pane` the fill `background` and sets `terminal_opacity` to 1; a third time puts picture `000` back and it turns again.

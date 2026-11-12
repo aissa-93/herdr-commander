@@ -18,12 +18,18 @@
 // even when the pane or popup that asked is gone. With props { menu: "tab-ctx", tab }
 // this mod is cmdr-tabs' right-click menu for that tab (cmdr-tabs sets shared
 // "commander.tabmenu" to the tab and runs cmdr-menubar.tab-menu).
+//
+// Updates (update.js): a while after start and then every six hours, this copy brings
+// the install up to the repo's release branch. cmdr-menubar.update looks now (and says
+// what it found), cmdr-menubar.update-auto turns the timed look off or on (shared
+// "commander.update"); the last result is shared "commander.update.status".
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, spaces, panes, run, openOverlay, closeOverlay, props, nextCommand, exec, theme, shared, setShared, window, layout, appHome, readTextFile, notify } from "herdr";
 import { grid, chord, pretty, mark, bump, BUMP_MAX, lifted } from "./ui.js";
 import { execPython } from "./runtime.js";
+import { update, UPDATE } from "./update.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -93,6 +99,16 @@ function nextGlobeMode() {
   if (mode === "off") setGlobe(null);
   else if (globeFrame() === null) setGlobe(0);
 }
+
+// Commander's own updates (see the top), as the ≡ menu says them.
+function updateSays() {
+  const s = shared("commander.update.status");
+  if (!s) return null;
+  if (s.state === "dev") return "dev copy";
+  if (s.state === "error") return "failed";
+  return s.commit ? s.commit.slice(0, 7) : null;
+}
+const toggleAutoUpdate = () => setShared("commander.update", shared("commander.update") === "off" ? "on" : "off");
 
 // A token count in four characters or so: 950, 386k, 2.9M.
 const compact = (n) => (n < 1000 ? String(n) : n < 999500 ? `${Math.round(n / 1000)}k` : n < 99950000 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e6)}M`);
@@ -166,6 +182,9 @@ function menus() {
       SEP,
       cmd("Check for updates", "app.check_updates"),
       cmd("What's new", "app.whats_new"),
+      SEP,
+      { label: "Update Commander", key: "cmdr-menubar.update", value: updateSays(), act: () => run("cmdr-menubar.update") },
+      { label: "Auto-update Commander", key: "cmdr-menubar.update-auto", on: shared("commander.update") !== "off", stay: true, act: toggleAutoUpdate },
     ] },
     { id: "space", label: "Space", items: [
       cmd("New space", "space.new"),
@@ -259,6 +278,8 @@ export default class Menubar extends View {
         if (c === "globe") nextGlobeMode();
         if (c === "rescale") { setShared("commander.scale.manual", false); await this.detect(); }
         if (c === "usage") this.openUsage();
+        if (c === "update") this.checkUpdate(cx, true);
+        if (c === "update-auto") toggleAutoUpdate();
         if (c === "usage-refresh") this.readUsage(cx, true);
         if (c === "todo") panel("todo")?.toggle();
         if (c === "pane-to-tab") {
@@ -289,6 +310,26 @@ export default class Menubar extends View {
     });
     cx.timer.every(USAGE_EVERY, (cx) => this.readUsage(cx, false));
     this.readUsage(cx, true);
+    cx.timer.after(UPDATE.first, (cx) => this.checkUpdate(cx, false));
+    cx.timer.every(UPDATE.every, (cx) => this.checkUpdate(cx, false));
+  }
+
+  // One look at the repo (update.js). A timed look is quiet unless it changed something;
+  // one asked for (the menu, the key) says what it found, and runs even with auto off.
+  checkUpdate(cx, asked) {
+    if (this.updating) return;
+    this.updating = true;
+    cx.spawn(async () => {
+      try {
+        const r = await update({ force: asked });
+        setShared("commander.update.status", { ...r, at: Date.now() });
+        if (asked && r.state === "current") notify({ title: "Commander is up to date", body: `Release ${r.commit.slice(0, 7)}.`, level: "info" });
+        if (asked && r.state === "dev") notify({ title: "Commander doesn't update here", body: "This is a dev copy (.commander-dev): the repo is made from it.", level: "info" });
+        if (asked && r.state === "error") notify({ title: "Couldn't update Commander", body: r.error, level: "error" });
+      } finally {
+        this.updating = false;
+      }
+    });
   }
 
   // One move at a time, by the script (it waits for the core between steps).
