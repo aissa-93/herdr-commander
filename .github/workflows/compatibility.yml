@@ -39,3 +39,27 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: .\tests\install.Tests.ps1
+
+  # Installs update themselves from the release branch (mods/cmdr-menubar/update.js).
+  # It moves to main only once main's tests pass, and only to main's newest commit.
+  release:
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Move release to this commit
+        run: |
+          git fetch -q origin main
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "main has moved on since $GITHUB_SHA; its own run will release it."
+            exit 0
+          fi
+          git push --force origin "$GITHUB_SHA:refs/heads/release"
