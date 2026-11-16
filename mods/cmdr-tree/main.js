@@ -104,6 +104,7 @@ const PR_TTL = { pending: 30000, settled: 180000, none: 600000, never: 3600000 }
 
 export default class Tree extends View {
   init(_props, cx) {
+    this.indent = 0; // px every row under a machine header steps in (set by grouped())
     if (props()?.menu) return this.menuInit(cx);
     // There was an activity log once: what it kept goes.
     localStorage.removeItem("activity"); localStorage.removeItem("activity.folded");
@@ -570,7 +571,7 @@ export default class Tree extends View {
 
   // The project's line down the left of its rows, under its chevron.
   rail(G, hue) {
-    return div().absolute().left(3 * G.u - G.px).top(0).bottom(0).w(2 * G.px).bg(faded(hue, "59"));
+    return div().absolute().left(this.indent + 3 * G.u - G.px).top(0).bottom(0).w(2 * G.px).bg(faded(hue, "59"));
   }
 
   // One column of a tree line: "│" passes through, "├" and "└" branch to the row.
@@ -664,7 +665,7 @@ export default class Tree extends View {
     const top = kids.map((r) => r.w.status).reduce((a, s) => ((RANK[s] ?? 0) > (RANK[a] ?? 0) ? s : a), null);
     const over = this.dragging({ project: p.id });
     const hue = this.hue(t, p.id);
-    return this.dropTarget(h_flex().id(`project-${p.id}`).h(G.row).flex_none().pl(2 * G.u).pr(G.u).gap(G.u).items_center()
+    return this.dropTarget(h_flex().id(`project-${p.id}`).h(G.row).flex_none().pl(this.indent + 2 * G.u).pr(G.u).gap(G.u).items_center()
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .when(over, (el) => el.bg(t.selected))
       .on_click((_e, cx) => this.toggleProject(p.id, cx))
@@ -680,7 +681,7 @@ export default class Tree extends View {
   }
 
   projectEmpty(p, t, G) {
-    return h_flex().relative().id(`project-new-${p.id}`).h(G.row).flex_none().pl(4 * G.u).pr(2 * G.u).gap(G.u).items_center()
+    return h_flex().relative().id(`project-new-${p.id}`).h(G.row).flex_none().pl(this.indent + 4 * G.u).pr(2 * G.u).gap(G.u).items_center()
       .child(this.rail(G, this.hue(t, p.id)))
       .text_color(t.muted).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click(() => newSession(p))
@@ -761,7 +762,10 @@ export default class Tree extends View {
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
-    const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(G.row).flex_none().px(4 * G.u).flex().items_center().text_color(t.muted).child("Loading…");
+    const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(G.row).flex_none().pl(this.indent + 4 * G.u).pr(4 * G.u).flex().items_center().text_color(t.muted).child("Loading…");
+    // Under machine headers, everything a machine holds steps in one notch so a
+    // project never reads as a machine.
+    this.indent = remote.length ? 2 * G.u : 0;
     if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : this.machineRows(null, rows, draw, t, G);
     const machineNames = [null, ...remote];
     const small = (id, text, action, tip, loud = false) => div().id(id).flex_none().h(3 * G.u).px(G.u).flex().items_center().cursor_pointer()
@@ -795,7 +799,7 @@ export default class Tree extends View {
           .child(div().flex_none().max_w(18 * G.u).truncate().child(repair?.error || "rebuilt"))
           .child(small(`machine-connect-${m}`, repair?.busy ? "Connecting…" : "Connect", (cx) => this.reconnect(machine, cx), repair?.error || "This machine was rebuilt or replaced. Click to connect to the new one.")))
         .when(connected, el => el.child(small(`machine-add-${m ?? "local"}`, "+", () => run("space.new", { machine: m ?? "" }), `New space on ${m ?? "this computer"}`))), m, { unfile: m }, (src) => fileSpace(src.id, null));
-      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(G.row).flex_none().pl(4 * G.u).pr(2 * G.u).gap(G.u).items_center()
+      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(G.row).flex_none().pl(this.indent + 2 * G.u).pr(2 * G.u).gap(G.u).items_center()
         .text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
         .child(div().w(2 * G.u).flex_none().flex().justify_center().child("+")).child("New space there");
@@ -855,7 +859,7 @@ export default class Tree extends View {
     const soft = ink ?? t.muted;
     const more = lead ? ctx.detail.get(lead.address) || (mine.length > 1 ? lead.program?.name ?? "" : "") : "";
     const when = lead ? this.since(lead) : 0;
-    const pad = (filed ? 4 : 2) * G.u;
+    const pad = this.indent + (filed ? 4 : 2) * G.u;
     const hot = Boolean(lead) && this.hovered === w.id && this.pressed === null;
     const tail = g ? this.gitTail(g, name, t, G, ink, w.id) : null;
     const hue = this.hue(t, project);
